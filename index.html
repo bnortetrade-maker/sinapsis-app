@@ -624,7 +624,7 @@ if("serviceWorker" in navigator){
     authMode:"login", authEmail:"", authPass:"", authBusy:false,
     // Conversación de voz de la pantalla de inicio: no es un enrutador de comandos,
     // es un hilo de conversación continuo (fase: "idle"|"listening"|"thinking"|"speaking").
-    homeVoice: { active:false, phase:"idle", recog:null, transcript:"", silenceStreak:0 },
+    homeVoice: { active:false, phase:"idle", recog:null, transcript:"", silenceStreak:0, isSpeaking:false, currentSpeechId:null },
     homeChat: [], homeTyped:"",
     // Menú lateral de archivos generados
     sidebarOpen: false, generatedFiles: [],
@@ -759,6 +759,16 @@ if("serviceWorker" in navigator){
     $("#streakCount").textContent = state.stats.streakDays;
   }
 
+  function deleteCard(cardId){
+    state.cards = state.cards.filter(c=>c.id!==cardId);
+    if(state.review.active && state.review.queue){
+      state.review.queue = state.review.queue.filter(c=>c.id!==cardId);
+    }
+    localStorage.setItem('cards', JSON.stringify(state.cards));
+    toast('Tarjeta borrada');
+    queueCloudSync();
+  }
+
   function dueCards(){
     const now = new Date().toISOString();
     return state.cards.filter(c=>c.dueAt<=now).sort((a,b)=>a.dueAt.localeCompare(b.dueAt));
@@ -817,8 +827,67 @@ if("serviceWorker" in navigator){
     window.speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text);
     u.lang = (navigator.language||"es-ES").startsWith("es") ? navigator.language : "es-ES";
-    u.onend = onEnd; u.onerror = onEnd;
+    u.rate = 0.85; // Más lenta y natural (1 es normal)
+    u.pitch = 1.1; // Ligeramente más agudo y amigable
+    u.volume = 0.95; // Volumen natural
+    const speechId = Math.random().toString(36).slice(2, 10);
+    state.homeVoice.currentSpeechId = speechId;
+    state.homeVoice.isSpeaking = true;
+    render();
+
+    // Escuchar interrupciones mientras habla
+    if(state.homeVoice.active){
+      listenForInterrupt(speechId);
+    }
+
+    u.onend = ()=>{
+      if(state.homeVoice.currentSpeechId === speechId){
+        state.homeVoice.isSpeaking = false;
+        state.homeVoice.currentSpeechId = null;
+        render();
+      }
+      onEnd && onEnd();
+    };
+    u.onerror = ()=>{
+      if(state.homeVoice.currentSpeechId === speechId){
+        state.homeVoice.isSpeaking = false;
+        state.homeVoice.currentSpeechId = null;
+        render();
+      }
+      onEnd && onEnd();
+    };
     window.speechSynthesis.speak(u);
+  }
+
+  function listenForInterrupt(speechId){
+    if(!canListen) return;
+    const rec = new SpeechRec();
+    rec.lang = (navigator.language||"es-ES").startsWith("es") ? navigator.language : "es-ES";
+    rec.continuous = false; rec.interimResults = true;
+    let finalText = "";
+    rec.onresult = (e)=>{
+      let interim = "";
+      for(let i=e.resultIndex;i<e.results.length;i++){
+        const t = e.results[i][0].transcript;
+        if(e.results[i].isFinal) finalText += t + " "; else interim += t;
+      }
+      if(finalText.trim()){
+        // Usuario interrumpió - cancelar síntesis y procesar
+        if(state.homeVoice.currentSpeechId === speechId){
+          window.speechSynthesis.cancel();
+          state.homeVoice.isSpeaking = false;
+          state.homeVoice.currentSpeechId = null;
+          sendHomeVoiceTurn(finalText.trim());
+        }
+        rec.abort();
+      }
+    };
+    rec.onend = ()=>{
+      // Si no interrumpió, seguir escuchando si sigue hablando
+      if(state.homeVoice.isSpeaking && state.homeVoice.currentSpeechId === speechId && state.homeVoice.active){
+        setTimeout(()=>listenForInterrupt(speechId), 100);
+      }
+    };
   }
 
   function browserSave(filename, data){
@@ -852,14 +921,14 @@ if("serviceWorker" in navigator){
     state.genBusy = true; render();
     try{
       const prompt = `Eres profesor de medicina creando tarjetas de estudio para una estudiante en la etapa "${stageLabel()}".
-Tema: "${topic}". Genera exactamente 10 tarjetas en español, con el nivel de dificultad adecuado para esa etapa, precisas y sin relleno.
+Tema: "${topic}". Genera exactamente 15 tarjetas en español, con el nivel de dificultad adecuado para esa etapa, precisas y sin relleno.
 Cada tarjeta: "front" es una pregunta o término breve; "back" es la respuesta, clara y concreta, máximo 2-3 frases.
-Responde SOLO con un array JSON de 10 objetos: [{"front":"...","back":"..."}, ...] sin texto adicional.`;
-      const arr = await callClaudeJSON(prompt, { maxTokens:1600 });
+Responde SOLO con un array JSON de 15 objetos: [{"front":"...","back":"..."}, ...] sin texto adicional.`;
+      const arr = await callClaudeJSON(prompt, { maxTokens:2400 });
       if(!Array.isArray(arr) || !arr.length) throw {code:"invalid_json"};
       const deckId = "d"+Math.random().toString(36).slice(2,10);
       const deck = { id:deckId, name:topic, topic, createdAt: Date.now() };
-      const cards = arr.slice(0,12).map(c=> mkCard(deckId, String(c.front||"").trim(), String(c.back||"").trim(), true));
+      const cards = arr.slice(0,20).map(c=> mkCard(deckId, String(c.front||"").trim(), String(c.back||"").trim(), true));
       saveDeckAndCards(deck, cards);
       announce(`Flashcards de "${topic}" creadas: ${cards.length} tarjetas.`);
     }catch(e){ toast(errorCopy(e)); }
@@ -1387,6 +1456,89 @@ Responde SOLO con JSON, en español, sin texto adicional:
     }
   }
 
+  // Exportar PPT + Word + Notas simultáneamente
+  async function exportMultiDocument(outline, title){
+    toast("📦 Generando PPT, Word y Notas...");
+    const baseTitle = (outline.title||title).slice(0,60);
+    const files = [];
+
+    try{
+      // 1. Generar PPTX
+      if(window.PptxGenJS){
+        const prs = new PptxGenJS();
+        prs.defineLayout({ name:'LAYOUT1', master:'MASTER1' });
+        (outline.slides||[]).forEach((sl,idx)=>{
+          const slide = prs.addSlide();
+          if(idx===0){
+            slide.background = { color: "5A3FA0" };
+            slide.addText(baseTitle, { x:0.5, y:2, w:9, h:1.5, fontSize:44, bold:true, color:"FFFFFF", align:"center" });
+          } else {
+            slide.addText(sl.title||"", { x:0.5, y:0.5, w:9, h:0.6, fontSize:32, bold:true, color:"5A3FA0" });
+            if(sl.explanation) slide.addText(sl.explanation, { x:0.5, y:1.2, w:9, h:1.2, fontSize:14, color:"333333" });
+            (sl.bullets||[]).forEach((b,i)=> slide.addText("• "+b, { x:0.7, y:2.5+i*0.35, w:8.8, h:0.3, fontSize:12, color:"555555" }));
+          }
+        });
+        const pptxBlob = await prs.writeFile({ fileName: baseTitle });
+        const pptxFilename = baseTitle+".pptx";
+        addGeneratedFile(pptxFilename, pptxBlob, "pptx");
+        files.push({name: pptxFilename, blob: pptxBlob});
+      }
+    }catch(e){ console.error("Error en PPTX:", e); }
+
+    try{
+      // 2. Generar DOCX
+      const ok = await ensureDocxLib();
+      if(ok && window.docx){
+        const { Document, Packer, Paragraph, TextRun, HeadingLevel } = window.docx;
+        const children = [
+          new Paragraph({ text: baseTitle, heading: HeadingLevel.HEADING_1 }),
+          new Paragraph({ children:[ new TextRun({ text:"Guía completa — Generado con Sinapsis", italics:true, color:"8465C9" }) ] }),
+          new Paragraph({ text:"" }),
+        ];
+        (outline.slides||[]).forEach(sl=>{
+          children.push(new Paragraph({ text: sl.title||"", heading: HeadingLevel.HEADING_2 }));
+          if(sl.explanation) children.push(new Paragraph({ children:[ new TextRun({ text:String(sl.explanation) }) ] }));
+          (sl.bullets||[]).forEach(b=> children.push(new Paragraph({ text:b, bullet:{ level:0 } })));
+        });
+        const doc = new Document({ sections:[{ children }] });
+        const docxBlob = await Packer.toBlob(doc);
+        const docxFilename = baseTitle+"_Guía.docx";
+        addGeneratedFile(docxFilename, docxBlob, "docx");
+        files.push({name: docxFilename, blob: docxBlob});
+      }
+    }catch(e){ console.error("Error en DOCX:", e); }
+
+    // 3. Generar Notas (TXT)
+    try{
+      let notasText = "📝 NOTAS PARA LA PRESENTACIÓN\n";
+      notasText += "=".repeat(50)+"\n\n";
+      notasText += "Título: "+baseTitle+"\n";
+      notasText += "Generado con Sinapsis\n\n";
+      (outline.slides||[]).forEach((sl,idx)=>{
+        notasText += `\n[Diapositiva ${idx}] ${sl.title||""}\n`;
+        notasText += "-".repeat(40)+"\n";
+        if(sl.explanation) notasText += "Explicación: "+sl.explanation+"\n";
+        if(sl.bullets && sl.bullets.length) notasText += "Puntos clave:\n"+sl.bullets.map(b=>"  • "+b).join("\n")+"\n";
+        notasText += "\n💡 Tips para presentar:\n";
+        notasText += "  • Mira al público mientras hablas\n";
+        notasText += "  • Haz pausas después de puntos importantes\n";
+        notasText += "  • Usa ejemplos reales para ilustrar conceptos\n";
+      });
+      notasText += "\n\nTiempos recomendados:\n";
+      notasText += "  • Introducción: 2-3 minutos\n";
+      notasText += `  • Contenido: ${Math.ceil((outline.slides||[]).length * 3)} minutos\n`;
+      notasText += "  • Conclusión: 1-2 minutos\n";
+      const notasBlob = new Blob([notasText], { type:"text/plain" });
+      const notasFilename = baseTitle+"_Notas.txt";
+      addGeneratedFile(notasFilename, notasBlob, "txt");
+      files.push({name: notasFilename, blob: notasBlob});
+    }catch(e){ console.error("Error en Notas:", e); }
+
+    // Descargar archivos
+    files.forEach(f=> browserSave(f.name, f.blob));
+    toast(`✅ ${files.length} archivo${files.length===1?"":"s"} generado${files.length===1?"":"s"}: PPT, Word y Notas`);
+  }
+
   /* ---------- Menú de exportación (elegir formato) ---------- */
   function openExportMenu(title, materialText){
     closeExportMenu();
@@ -1553,13 +1705,11 @@ Responde SOLO con JSON, en español, sin texto adicional:
   // sobre medicina y estudio — no un enrutador de comandos cortos. Mantiene el
   // hilo (state.homeChat) y nunca se le limita artificialmente la extensión.
   function homeVoiceSystemPrompt(){
-    return `Eres un asistente de voz conversacional especializado en medicina y estudios académicos, dentro de la app Sinapsis. Hablas con una estudiante en la etapa "${stageLabel()}".
-No eres un sistema de comandos rápidos: eres un interlocutor fluido, como una conversación natural entre dos personas — escuchas, respondes con claridad y utilidad, y luego haces una pregunta de seguimiento para mantener viva la conversación y orientada a sus objetivos de estudio (ej. "¿quieres que lo veamos con un caso clínico?", "¿te preparo un resumen para estudiar esto?", "¿profundizamos en la fisiopatología?").
-Tono profesional pero cercano, empático y pedagógico; adapta el nivel técnico a su etapa. Nunca cortes la conversación de forma brusca.
-Hablas de forma natural, en frases completas y con pausas lógicas — evita listas interminables pensadas para lectura en pantalla; si un tema es muy extenso, resúmelo y ofrece profundizar por partes en los siguientes turnos, sin perder el hilo.
-Tu dominio principal es medicina y estudios relacionados (ciencias de la salud, enfermería, farmacia, psicología clínica, investigación biomédica): puedes explicar conceptos, guías, algoritmos diagnósticos y terapéuticos, ayudar a planificar el estudio, simular casos clínicos paso a paso, y orientar sobre cómo buscar y leer literatura (PubMed, Cochrane, guías de sociedades). Si la conversación se desvía a otro tema puedes seguirla con naturalidad, pero vuelve a aportar valor académico/médico cuando puedas.
-No limites artificialmente la profundidad de tus explicaciones ni la longitud de la conversación; si el tema es complejo, avanza por partes a lo largo de varios turnos sin perder la coherencia. Prioriza claridad y utilidad sobre brevedad extrema.
-No des diagnósticos sobre personas reales; si pregunta por síntomas propios, sugiere consultar a un médico. Responde siempre en español.`;
+    return `Eres Sinapsis: asistente médico directo y funcional en la app. Etapa: ${stageLabel()}.
+FUNCIONALIDAD PRIMERO: Responde conciso y útil. No hagas preguntas de seguimiento ni propongas temas. Sé directo.
+FORMATO: Párrafos cortos. Si el tema es largo, divide en 2-3 turnos. Evita listas.
+DOMINIO: Medicina, conceptos, algoritmos, casos clínicos, literatura. Si no es médico, responde brevemente y vuelve al estudio.
+No diagnósticos personales. Responde en español.`;
   }
 
   function homeVoiceStatusText(){
@@ -1598,10 +1748,17 @@ No des diagnósticos sobre personas reales; si pregunta por síntomas propios, s
     if(!log) return;
     log.innerHTML = state.homeChat.map((m,i)=> {
       const bubble = `<div class="bubble ${m.role}">${escapeHtml(m.content).replace(/\n/g,"<br>")}</div>`;
-      const actions = `<div class="msg-actions" style="align-self:${m.role==="user"?"flex-end":"flex-start"}">
+      let actions = `<div class="msg-actions" style="align-self:${m.role==="user"?"flex-end":"flex-start"}">
         <button class="btn btn-soft btn-sm copy-msg-btn" data-i="${i}" title="Copiar">📋</button>
-        <button class="btn btn-soft btn-sm delete-msg-btn" data-i="${i}" title="Eliminar">🗑️</button>
-      </div>`;
+        <button class="btn btn-soft btn-sm delete-msg-btn" data-i="${i}" title="Eliminar">🗑️</button>`;
+      // Agregar botones contextuales para respuestas del asistente
+      if(m.role === "assistant" && m.content.length > 20){
+        actions += `
+        <button class="btn btn-eosin btn-sm make-cards-home-btn" data-i="${i}" title="Generar tarjetas">🃏</button>
+        <button class="btn btn-eosin btn-sm export-home-btn" data-i="${i}" title="Exportar">📤</button>
+        <button class="btn btn-eosin btn-sm save-note-home-btn" data-i="${i}" title="Guardar nota">📝</button>`;
+      }
+      actions += `</div>`;
       return bubble + actions;
     }).join("")
       + (state.homeVoice.phase==="thinking" ? `<div class="bubble assistant thinking">Pensando…</div>` : "");
@@ -1621,6 +1778,41 @@ No des diagnósticos sobre personas reales; si pregunta por síntomas propios, s
         if(state.homeChat[i]){
           state.homeChat.splice(i, 1);
           renderHomeChatLog();
+        }
+      };
+    });
+    // Botón de generar tarjetas
+    $$(".make-cards-home-btn", log).forEach(b=>{
+      b.onclick = ()=>{
+        const msg = state.homeChat[+b.dataset.i];
+        if(msg){
+          state.genTopic = msg.content.split("\n")[0].slice(0,50);
+          state.genBusy = true;
+          render();
+          generateDeck(state.genTopic);
+        }
+      };
+    });
+    // Botón de exportar
+    $$(".export-home-btn", log).forEach(b=>{
+      b.onclick = ()=>{
+        const msg = state.homeChat[+b.dataset.i];
+        if(msg) openExportMenu("Respuesta de Sinapsis", msg.content);
+      };
+    });
+    // Botón de guardar nota
+    $$(".save-note-home-btn", log).forEach(b=>{
+      b.onclick = ()=>{
+        const msg = state.homeChat[+b.dataset.i];
+        if(msg){
+          const note = { id:"n"+Math.random().toString(36).slice(2,10),
+            title:"Respuesta · "+new Date().toLocaleDateString(),
+            rawText: msg.content,
+            summary: msg.content.slice(0, 300),
+            terms: [],
+            createdAt: Date.now() };
+          saveNote(note);
+          toast("Guardado en apuntes");
         }
       };
     });
@@ -1651,7 +1843,7 @@ No des diagnósticos sobre personas reales; si pregunta por síntomas propios, s
             <button class="btn btn-soft" id="saveNameBtn">Guardar</button>
           </div>` : ""}
         ${banner}
-        <p class="lede">Habla con Sinapsis como en una conversación real: pregúntale sobre un tema de medicina o de tu estudio, y sigue profundizando con lo que te responda.</p>
+        <p class="lede">Pregunta. Sinapsis responde. Luego genera tarjetas, exporta PDF o guarda como nota — todo integrado en una respuesta.</p>
 
         <div class="card" style="display:flex;flex-direction:column;align-items:center;gap:10px;padding:20px 16px">
           <div id="homeWave" class="home-wave wave-${state.homeVoice.phase}">${Array.from({length:20}).map(()=>`<div class="wave-bar"></div>`).join("")}</div>
@@ -1915,6 +2107,7 @@ No des diagnósticos sobre personas reales; si pregunta por síntomas propios, s
           <button class="btn grade-btn g-hard" data-q="3">Difícil<small>~1 d</small></button>
           <button class="btn grade-btn g-good" data-q="4">Bien<small>días</small></button>
           <button class="btn grade-btn g-easy" data-q="5">Fácil<small>+días</small></button>
+          <button class="btn" id="deleteCardBtn" style="background:var(--eosin);color:white">🗑️ Borrar</button>
         </div>
       </div>
     `;
@@ -1930,6 +2123,15 @@ No des diagnósticos sobre personas reales; si pregunta por síntomas propios, s
       state.review.idx += 1; state.review.flipped = false;
       render();
     });
+    const deleteBtn = $("#deleteCardBtn");
+    if(deleteBtn){
+      deleteBtn.onclick = (e)=>{
+        e.stopPropagation();
+        deleteCard(card.id);
+        state.review.idx = Math.min(state.review.idx, state.review.queue.length - 2);
+        render();
+      };
+    }
   }
 
   /* ---------- Notes ---------- */
@@ -2014,9 +2216,9 @@ No des diagnósticos sobre personas reales; si pregunta por síntomas propios, s
           <input type="file" id="photoInput" accept="image/*" capture="environment" style="display:none">
           ${p.previewUrl ? `
             <div class="chip-row">
-              <button class="chip" data-q="Transcribe el texto de esta imagen.">Transcribir texto</button>
-              <button class="chip" data-q="Explica este diagrama con detalle, a mi nivel.">Explicar diagrama</button>
-              <button class="chip" data-q="Hazme 3 preguntas de repaso sobre esto.">Preguntas de repaso</button>
+              <button class="chip" data-q="Extrae todo el texto visible en esta imagen exactamente como aparece, manteniendo la estructura y formato original. Solo el texto, sin explicaciones.">📋 OCR</button>
+              <button class="chip" data-q="Explica este contenido con detalle, a mi nivel de estudiante de medicina.">📖 Explicar</button>
+              <button class="chip" data-q="Hazme 3 preguntas de repaso sobre esto.">❓ Preguntas</button>
             </div>
             <textarea id="photoQ" rows="2" placeholder="¿Qué quieres preguntar sobre la imagen?">${escapeHtml(p.question)}</textarea>
             <button class="btn btn-eosin" id="askPhotoBtn" ${p.asking?"disabled":""}>${p.asking? "Consultando…" : "✨ Preguntar a la IA"}</button>
