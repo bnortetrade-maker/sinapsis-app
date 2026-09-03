@@ -826,10 +826,18 @@ if("serviceWorker" in navigator){
     if(!canSpeak) return;
     window.speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text);
-    u.lang = (navigator.language||"es-ES").startsWith("es") ? navigator.language : "es-ES";
-    u.rate = 0.85; // Más lenta y natural (1 es normal)
-    u.pitch = 1.1; // Ligeramente más agudo y amigable
-    u.volume = 0.95; // Volumen natural
+    u.lang = "es-AR"; // Argentina español
+    u.rate = 0.8; // Más lenta, conversacional
+    u.pitch = 1.0; // Neutral, natural
+    u.volume = 1.0; // Volumen máximo natural
+
+    // Seleccionar voz argentina si está disponible, sino latina
+    const voices = window.speechSynthesis.getVoices();
+    const arVoice = voices.find(v=> v.lang.includes("es-AR") || (v.lang.includes("es") && v.name.toLowerCase().includes("argentina")));
+    const latinVoice = voices.find(v=> v.lang.includes("es") && (v.name.toLowerCase().includes("latino") || v.name.toLowerCase().includes("latin")));
+    const fallbackVoice = voices.find(v=> v.lang.includes("es"));
+    u.voice = arVoice || latinVoice || fallbackVoice || null;
+
     const speechId = Math.random().toString(36).slice(2, 10);
     state.homeVoice.currentSpeechId = speechId;
     state.homeVoice.isSpeaking = true;
@@ -901,8 +909,9 @@ if("serviceWorker" in navigator){
 
   function addGeneratedFile(filename, blob, type){
     const fileType = filename.split(".").pop().toUpperCase();
+    const fileId = "f" + Math.random().toString(36).slice(2, 10);
     const file = {
-      id: "f" + Math.random().toString(36).slice(2, 10),
+      id: fileId,
       name: filename,
       type: fileType,
       blob: blob,
@@ -910,6 +919,19 @@ if("serviceWorker" in navigator){
     };
     state.generatedFiles.unshift(file);
     if(state.generatedFiles.length > 50) state.generatedFiles.pop();
+
+    // Persistir blob en IndexedDB
+    if(window.indexedDB){
+      const dbReq = indexedDB.open("Sinapsis", 1);
+      dbReq.onupgradeneeded = (e)=>{ e.target.result.createObjectStore("blobs", {keyPath:"id"}); };
+      dbReq.onsuccess = (e)=>{
+        try{
+          const tx = e.target.result.transaction("blobs", "readwrite");
+          tx.objectStore("blobs").put({ id:fileId, blob:blob });
+        }catch(err){ /* IndexedDB no disponible, continúa en memoria */ }
+      };
+    }
+
     lsSet("sinapsis.generatedFiles", state.generatedFiles.map(f=>({ id:f.id, name:f.name, type:f.type, createdAt:f.createdAt })));
     queueCloudSync(); // Sincronizar metadatos de archivos generados a la nube
     if(state.sidebarOpen) renderSidebar();
@@ -1263,12 +1285,19 @@ Responde SOLO con JSON, en español, sin texto adicional:
         const filename = (outline.title||title).slice(0,60)+".pptx";
         addGeneratedFile(filename, blob, "pptx");
         browserSave(filename, blob);
-        toast("Presentación .pptx descargada.");
+        toast("✅ Presentación .pptx descargada correctamente.");
         return;
-      }catch(e){ /* cae al respaldo de texto */ }
+      }catch(e){
+        console.error("PPTX error:", e);
+        toast("⚠️ Error al generar PPTX: " + (e.message || "intenta de nuevo"));
+        /* cae al respaldo de texto */
+      }
     }
-    browserSave((outline.title||title).slice(0,60)+".md", outlineAsText(outline, title));
-    toast("No se pudo generar el .pptx — te di el esquema en un archivo de texto para pegarlo en Slides/PowerPoint.");
+    if(!window.PptxGenJS){
+      toast("⚠️ No se pudo cargar la librería PPTX. Descargando esquema de texto…");
+    }
+    browserSave((outline.title||title).slice(0,60)+".txt", outlineAsText(outline, title));
+    toast("Se descargó un esquema de texto — importa a PowerPoint/Slides manualmente.");
   }
 
   async function exportPdf(outline, title){
@@ -1370,7 +1399,7 @@ Responde SOLO con JSON, en español, sin texto adicional:
     const blob = doc.output("blob");
     addGeneratedFile(filename, blob, "pdf");
     browserSave(filename, blob);
-    toast("PDF descargado.");
+    toast("✅ PDF descargado correctamente.");
   }
 
   async function exportDocx(outline, title){
@@ -1449,10 +1478,12 @@ Responde SOLO con JSON, en español, sin texto adicional:
       const filename = (outline.title||title).slice(0,60)+".docx";
       addGeneratedFile(filename, blob, "docx");
       browserSave(filename, blob);
-      toast("Documento Word descargado.");
+      toast("✅ Documento Word descargado correctamente.");
     }catch(e){
-      browserSave((outline.title||title).slice(0,60)+".md", outlineAsText(outline, title));
-      toast("No se pudo generar el Word — te di el esquema en un archivo de texto.");
+      console.error("DOCX error:", e);
+      toast("⚠️ Error al generar Word: " + (e.message || "intenta de nuevo"));
+      browserSave((outline.title||title).slice(0,60)+".txt", outlineAsText(outline, title));
+      toast("Se descargó un esquema de texto — importa a Word/Docs manualmente.");
     }
   }
 
@@ -2518,9 +2549,31 @@ No diagnósticos personales. Responde en español.`;
       el.onclick = ()=>{
         const fileId = el.dataset.fileId;
         const file = state.generatedFiles.find(f=>f.id === fileId);
-        if(file && file.blob){
-          browserSave(file.name, file.blob);
-          toast(`Descargando ${file.name}…`);
+        if(file){
+          if(file.blob){
+            browserSave(file.name, file.blob);
+            toast(`Descargando ${file.name}…`);
+          } else if(window.indexedDB){
+            // Intentar recuperar blob de IndexedDB
+            const dbReq = indexedDB.open("Sinapsis", 1);
+            dbReq.onsuccess = (e)=>{
+              try{
+                const tx = e.target.result.transaction("blobs", "readonly");
+                const blobReq = tx.objectStore("blobs").get(fileId);
+                blobReq.onsuccess = ()=>{
+                  if(blobReq.result && blobReq.result.blob){
+                    file.blob = blobReq.result.blob;
+                    browserSave(file.name, file.blob);
+                    toast(`Descargando ${file.name}…`);
+                  } else {
+                    toast("Archivo no disponible — fue generado en otra sesión");
+                  }
+                };
+              }catch(err){ toast("No se pudo recuperar el archivo"); }
+            };
+          } else {
+            toast("Archivo solo disponible en la sesión actual. Regenera si es necesario.");
+          }
         }
       };
     });
