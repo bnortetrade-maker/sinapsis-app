@@ -176,6 +176,7 @@
   .flip-hint{ position:absolute; bottom:14px; left:0; right:0; text-align:center; font-size:11px; color:var(--ink-faint); }
 
   .grade-row{ display:grid; grid-template-columns:repeat(4,1fr); gap:8px; }
+  .grade-row #deleteCardBtn{ grid-column:1 / -1; margin-top:2px; }
   .grade-btn{ flex-direction:column; gap:2px; padding:10px 4px; }
   .grade-btn small{ font-weight:400; font-size:10.5px; opacity:.85; }
   .g-again{ background:var(--bad-soft); color:var(--bad); }
@@ -607,10 +608,10 @@ if("serviceWorker" in navigator){
     tab: "home", prevTab:"cards",
     decks: [], cards: [], notes: [],
     schedule: [], reminders: [],
-    profile: { stage: "Primer semestre", name:"", autoSpeak:true }, stageDraft:"", nameDraft:"",
+    profile: { stage: "Primer semestre", name:"", autoSpeak:true, topics:[] }, stageDraft:"", nameDraft:"",
     stats: { streakDays:0, lastStudyDate:null, totalReviews:0, correctReviews:0, daily:{} },
     review: { active:false, queue:[], idx:0, flipped:false },
-    genTopic:"", genBusy:false,
+    genTopic:"", genBusy:false, genCount:15,
     notesMode:"write", notesBusy:false, notesDraftTitle:"", notesDraftText:"",
     // "live" = solo transcripción por voz (SpeechRecognition), "audio" = solo grabar el audio (MediaRecorder).
     // Nunca se usan las dos APIs de micrófono al mismo tiempo: en Android, el sistema operativo le
@@ -725,6 +726,19 @@ if("serviceWorker" in navigator){
   function saveStats(){ lsSet(LS.stats, state.stats); queueCloudSync(); }
   function saveChat(){ lsSet(LS.chat, state.chat.slice(-40)); queueCloudSync(); }
   function saveProfile(){ lsSet(LS.profile, state.profile); queueCloudSync(); }
+
+  // "Auto-aprendizaje" liviano: recuerda de qué temas habló el usuario para
+  // que Sinapsis pueda referirse a ellos ("la última vez viste...") y sonar
+  // más cercana, sin gastar una llamada extra a la IA por cada turno.
+  function rememberTopic(topic){
+    const t = (topic||"").trim().replace(/\s+/g," ");
+    if(!t || t.length<3) return;
+    if(!Array.isArray(state.profile.topics)) state.profile.topics = [];
+    state.profile.topics = state.profile.topics.filter(x=> x.toLowerCase()!==t.toLowerCase());
+    state.profile.topics.unshift(t);
+    state.profile.topics = state.profile.topics.slice(0,8);
+    saveProfile();
+  }
   function saveSchedule(){ lsSet(LS.schedule, state.schedule); queueCloudSync(); }
   function saveReminders(){ lsSet(LS.reminders, state.reminders); queueCloudSync(); }
 
@@ -764,7 +778,7 @@ if("serviceWorker" in navigator){
     if(state.review.active && state.review.queue){
       state.review.queue = state.review.queue.filter(c=>c.id!==cardId);
     }
-    localStorage.setItem('cards', JSON.stringify(state.cards));
+    lsSet(LS.cards, state.cards); // clave correcta "sinapsis.cards" (antes escribía en 'cards' y la tarjeta reaparecía al recargar)
     toast('Tarjeta borrada');
     queueCloudSync();
   }
@@ -803,6 +817,40 @@ if("serviceWorker" in navigator){
   const canListen = !!SpeechRec;
   const canSpeak = "speechSynthesis" in window;
 
+  // Las voces del navegador cargan de forma ASÍNCRONA — llamar a getVoices()
+  // de inmediato casi siempre devuelve [] la primera vez (bug clásico de la
+  // Web Speech API), lo que hace que la voz elegida sea null y el navegador
+  // caiga en su voz robótica por defecto. Se cachean apenas están listas.
+  let cachedVoices = [];
+  function refreshVoiceCache(){
+    if(!canSpeak) return;
+    const v = window.speechSynthesis.getVoices();
+    if(v && v.length) cachedVoices = v;
+  }
+  if(canSpeak){
+    refreshVoiceCache();
+    window.speechSynthesis.onvoiceschanged = refreshVoiceCache;
+    // Algunos navegadores (Safari/iOS) nunca disparan onvoiceschanged de forma
+    // fiable — se reintenta unas veces por si acaso.
+    let voiceRetries = 0;
+    const voiceRetryTimer = setInterval(()=>{
+      refreshVoiceCache();
+      voiceRetries++;
+      if(cachedVoices.length || voiceRetries>10) clearInterval(voiceRetryTimer);
+    }, 300);
+  }
+  function pickBestSpanishVoice(){
+    const voices = cachedVoices.length ? cachedVoices : (canSpeak ? window.speechSynthesis.getVoices() : []);
+    if(!voices.length) return null;
+    const byName = (needle)=> voices.find(v=> v.lang.toLowerCase().includes("es") && v.name.toLowerCase().includes(needle));
+    return voices.find(v=> v.lang.toLowerCase()==="es-ar")
+      || byName("argentin")
+      || byName("latina") || byName("latino")
+      || voices.find(v=> v.lang.toLowerCase().startsWith("es") && /natural|neural|premium|enhanced/i.test(v.name))
+      || voices.find(v=> v.lang.toLowerCase().startsWith("es"))
+      || null;
+  }
+
   function startDictation(onFinal){
     if(!canListen) return null;
     const rec = new SpeechRec();
@@ -826,17 +874,12 @@ if("serviceWorker" in navigator){
     if(!canSpeak) return;
     window.speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text);
-    u.lang = "es-AR"; // Argentina español
-    u.rate = 0.8; // Más lenta, conversacional
+    const chosenVoice = pickBestSpanishVoice();
+    u.lang = chosenVoice ? chosenVoice.lang : "es-AR";
+    u.rate = 0.82; // Conversacional, ni lenta ni apurada
     u.pitch = 1.0; // Neutral, natural
     u.volume = 1.0; // Volumen máximo natural
-
-    // Seleccionar voz argentina si está disponible, sino latina
-    const voices = window.speechSynthesis.getVoices();
-    const arVoice = voices.find(v=> v.lang.includes("es-AR") || (v.lang.includes("es") && v.name.toLowerCase().includes("argentina")));
-    const latinVoice = voices.find(v=> v.lang.includes("es") && (v.name.toLowerCase().includes("latino") || v.name.toLowerCase().includes("latin")));
-    const fallbackVoice = voices.find(v=> v.lang.includes("es"));
-    u.voice = arVoice || latinVoice || fallbackVoice || null;
+    u.voice = chosenVoice;
 
     const speechId = Math.random().toString(36).slice(2, 10);
     state.homeVoice.currentSpeechId = speechId;
@@ -939,18 +982,19 @@ if("serviceWorker" in navigator){
   }
 
   /* ---------- AI features ---------- */
-  async function generateDeck(topic){
+  async function generateDeck(topic, count){
+    const n = [10,15,20].includes(+count) ? +count : 15;
     state.genBusy = true; render();
     try{
       const prompt = `Eres profesor de medicina creando tarjetas de estudio para una estudiante en la etapa "${stageLabel()}".
-Tema: "${topic}". Genera exactamente 15 tarjetas en español, con el nivel de dificultad adecuado para esa etapa, precisas y sin relleno.
+Tema: "${topic}". Genera exactamente ${n} tarjetas en español, con el nivel de dificultad adecuado para esa etapa, precisas y sin relleno.
 Cada tarjeta: "front" es una pregunta o término breve; "back" es la respuesta, clara y concreta, máximo 2-3 frases.
-Responde SOLO con un array JSON de 15 objetos: [{"front":"...","back":"..."}, ...] sin texto adicional.`;
-      const arr = await callClaudeJSON(prompt, { maxTokens:2400 });
+Responde SOLO con un array JSON de ${n} objetos: [{"front":"...","back":"..."}, ...] sin texto adicional.`;
+      const arr = await callClaudeJSON(prompt, { model: MODEL_QUICK, maxTokens: Math.round(n*160) });
       if(!Array.isArray(arr) || !arr.length) throw {code:"invalid_json"};
       const deckId = "d"+Math.random().toString(36).slice(2,10);
       const deck = { id:deckId, name:topic, topic, createdAt: Date.now() };
-      const cards = arr.slice(0,20).map(c=> mkCard(deckId, String(c.front||"").trim(), String(c.back||"").trim(), true));
+      const cards = arr.slice(0,n).map(c=> mkCard(deckId, String(c.front||"").trim(), String(c.back||"").trim(), true));
       saveDeckAndCards(deck, cards);
       announce(`Flashcards de "${topic}" creadas: ${cards.length} tarjetas.`);
     }catch(e){ toast(errorCopy(e)); }
@@ -983,7 +1027,7 @@ Texto:\n"""${answerText.slice(0,3000)}"""\nResponde SOLO con un array JSON: [{"f
       const prompt = `Resume estos apuntes de una estudiante de medicina (etapa: ${stageLabel()}) y extrae términos clave.
 Apuntes:\n"""${rawText.slice(0,4000)}"""
 Responde SOLO con un objeto JSON: {"summary": "resumen en 3-5 frases en español", "terms": [{"term":"...","definition":"definición breve"}] (máximo 6 términos)}`;
-      const data = await callClaudeJSON(prompt, { maxTokens:900 });
+      const data = await callClaudeJSON(prompt, { model: MODEL_QUICK, maxTokens:900 });
       const note = { id:"n"+Math.random().toString(36).slice(2,10), title: title || defaultTitle || "Apunte sin título",
         rawText, summary: data.summary || "", terms: Array.isArray(data.terms)? data.terms.slice(0,6): [],
         createdAt: Date.now() };
@@ -1736,11 +1780,21 @@ Responde SOLO con JSON, en español, sin texto adicional:
   // sobre medicina y estudio — no un enrutador de comandos cortos. Mantiene el
   // hilo (state.homeChat) y nunca se le limita artificialmente la extensión.
   function homeVoiceSystemPrompt(){
-    return `Eres Sinapsis: asistente médico directo y funcional en la app. Etapa: ${stageLabel()}.
-FUNCIONALIDAD PRIMERO: Responde conciso y útil. No hagas preguntas de seguimiento ni propongas temas. Sé directo.
-FORMATO: Párrafos cortos. Si el tema es largo, divide en 2-3 turnos. Evita listas.
-DOMINIO: Medicina, conceptos, algoritmos, casos clínicos, literatura. Si no es médico, responde brevemente y vuelve al estudio.
-No diagnósticos personales. Responde en español.`;
+    const name = firstName();
+    const topics = (state.profile.topics||[]).slice(0,5);
+    // Escrito como se le explicaría a una persona, no como una lista de reglas
+    // — así responde de forma natural en vez de seguir un checklist mecánico.
+    return `Sos Sinapsis, la compañera de estudio de ${name || "una estudiante"} de medicina (va por ${stageLabel()}). Hablás como alguien que sabe del tema y la conoce, no como un manual: directa, cálida, con las palabras justas — nada de rodeos ni de proponerle temas que no pidió, y sin acribillarla a preguntas de vuelta.
+
+${name ? `Se llama ${name}. Usá su nombre cuando surja natural, no en cada frase — como lo haría cualquiera que ya la conoce.` : ""}${topics.length ? ` Ya hablaron antes de ${topics.slice(0,3).join(", ")}, así que si viene al caso podés retomarlo con soltura.` : ""}
+
+Cuando te pregunte algo, respondé como en una conversación real: al grano, en frases que se puedan decir en voz alta, sin listas ni formato de texto para leer en pantalla. Si el tema da para mucho, contá lo esencial primero y seguí en el próximo intercambio si hace falta.
+
+Tu terreno es medicina y todo lo que rodea al estudio: conceptos, mecanismos, casos clínicos, cómo prepararse para un examen. Si se desvía a otra cosa, seguile la conversación con naturalidad y volvé al estudio cuando tenga sentido.
+
+Generar el PDF, Word o PowerPoint del tema ya lo hace la aplicación sola apenas te lo piden — vos nunca decís que no podés, porque de hecho ya está resuelto del otro lado.
+
+No das diagnósticos sobre personas reales. Respondé siempre en español, con el tono de alguien real, nunca como un sistema leyendo instrucciones.`;
   }
 
   function homeVoiceStatusText(){
@@ -1817,10 +1871,9 @@ No diagnósticos personales. Responde en español.`;
       b.onclick = ()=>{
         const msg = state.homeChat[+b.dataset.i];
         if(msg){
-          state.genTopic = msg.content.split("\n")[0].slice(0,50);
-          state.genBusy = true;
-          render();
-          generateDeck(state.genTopic);
+          const topic = msg.content.split("\n")[0].slice(0,50);
+          toast(`🃏 Generando ${state.genCount} tarjetas de "${topic}"…`);
+          generateDeck(topic, state.genCount);
         }
       };
     });
@@ -1989,26 +2042,62 @@ No diagnósticos personales. Responde en español.`;
     state.homeVoice.transcript = "";
     render();
     try{
-      // Detectar comandos de voz para exportación
+      // Detectar comandos de generación de documentos (patrones amplios en español)
       const lowerText = text.toLowerCase();
       let exportCommand = null;
       if(/\bpdf\b/i.test(lowerText)) exportCommand = "pdf";
       else if(/\bword\b|\bdocx\b/i.test(lowerText)) exportCommand = "docx";
-      else if(/\bpower\b|pptx/i.test(lowerText)) exportCommand = "pptx";
+      else if(/\bppt\b|\bpower\s*point\b|\bpptx\b|\bpresentaci[oó]n\b|\bdiapositivas?\b|\bslides?\b/i.test(lowerText)) exportCommand = "pptx";
 
-      if(exportCommand && state.homeChat.length > 1){
-        const lastContent = state.homeChat[state.homeChat.length - 2]?.content || "";
-        if(lastContent.length > 50){
-          toast(`📥 Generando ${exportCommand.toUpperCase()}…`);
-          const filename = `export-${Date.now()}.${exportCommand === "pptx" ? "pptx" : exportCommand === "docx" ? "docx" : "pdf"}`;
-          if(exportCommand === "pdf") exportPdf(lastContent, filename);
-          else if(exportCommand === "docx") exportDocx(lastContent, filename);
-          else if(exportCommand === "pptx") exportPptx(lastContent, filename);
+      const cleanTopic = (s)=> s.replace(/\b(pdf|word|docx|ppt|power\s*point|pptx|presentaci[oó]n|diapositivas?|slides?|genera(me)?|crea(me)?|hazme|hacer|quiero|necesito|un|una|de|del|sobre|acerca|eso|esto)\b/gi,"").replace(/\s+/g," ").trim();
+
+      if(exportCommand){
+        // Buscar la última respuesta larga de Sinapsis (material real) y la pregunta que la originó (tema/título)
+        const idx = [...state.homeChat].map((m,i)=>({m,i})).reverse().find(({m})=> m.role==="assistant" && m.content.length>50);
+        const lastAssistantMsg = idx ? idx.m : null;
+        const originatingUserMsg = idx && idx.i>0 ? state.homeChat[idx.i-1] : null;
+        const materialText = lastAssistantMsg ? lastAssistantMsg.content : text;
+        const rawTopic = lastAssistantMsg ? (cleanTopic(originatingUserMsg?.content||"") || cleanTopic(text)) : cleanTopic(text);
+        const topicTitle = (rawTopic || "Documento de estudio").slice(0,60);
+
+        toast(`📥 Generando ${exportCommand.toUpperCase()}… (esto puede tardar unos segundos)`);
+        render();
+        (async ()=>{
+          try{
+            const outline = await getStudyOutline(topicTitle, materialText);
+            if(exportCommand === "pdf") await exportPdf(outline, topicTitle);
+            else if(exportCommand === "docx") await exportDocx(outline, topicTitle);
+            else if(exportCommand === "pptx") await exportPptx(outline, topicTitle);
+          }catch(e){
+            toast("⚠️ No se pudo generar el documento: " + (e.message||errorCopy(e)));
+          }
+        })();
+        // Confirmar por voz de inmediato en vez de esperar a Claude
+        const confirmMsg = `Listo, te estoy generando el ${exportCommand==="pptx"?"PowerPoint":exportCommand==="docx"?"documento Word":"PDF"} de "${topicTitle}". Aparecerá para descargar en unos segundos.`;
+        state.homeChat.push({ role:"assistant", content: confirmMsg });
+        state.homeVoice.phase = "speaking";
+        render();
+        if(canSpeak){
+          window.speechSynthesis.cancel();
+          speakText(confirmMsg, null, ()=>{
+            if(!state.homeVoice.active){ state.homeVoice.phase = "idle"; render(); return; }
+            state.homeVoice.phase = "idle";
+            listenOneHomeTurn();
+          });
+        } else if(state.homeVoice.active){
+          listenOneHomeTurn();
+        } else {
+          state.homeVoice.phase = "idle"; render();
         }
+        return;
       }
 
-      const { text: answer } = await callClaude(state.homeChat, { system: homeVoiceSystemPrompt(), maxTokens: 8192 });
+      // Haiku 4.5 + menos tokens: respuestas conversacionales cortas no
+      // necesitan el modelo grande, y el techo de tokens bajo evita que se
+      // extienda de más — ambas cosas la hacen sentir mucho más ágil hablando.
+      const { text: answer } = await callClaude(state.homeChat, { model: MODEL_QUICK, system: homeVoiceSystemPrompt(), maxTokens: 700 });
       state.homeChat.push({ role:"assistant", content: answer });
+      rememberTopic(cleanTopic(text).slice(0,60)); // auto-aprendizaje: recuerda de qué hablaron
       state.homeVoice.phase = "speaking";
       render();
       if(canSpeak){
@@ -2057,16 +2146,23 @@ No diagnósticos personales. Responde en español.`;
           </div>
           <div class="chip-row">${PRESET_TOPICS.map(t=>`<button class="chip" data-topic="${escapeHtml(t)}">${escapeHtml(t)}</button>`).join("")}</div>
           <input type="text" id="topicInput" placeholder="O escribe tu propio tema…" value="${escapeHtml(state.genTopic)}">
-          <button class="btn btn-eosin" id="genBtn" ${state.genBusy? "disabled":""}>${state.genBusy? "Generando 10 tarjetas…" : "✨ Generar 10 tarjetas con IA"}</button>
+          <div class="field">
+            <label>¿Cuántas tarjetas?</label>
+            <div class="chip-row" id="genCountRow">
+              ${[10,15,20].map(n=>`<button class="chip ${state.genCount===n?'active':''}" data-count="${n}">${n}</button>`).join("")}
+            </div>
+          </div>
+          <button class="btn btn-eosin" id="genBtn" ${state.genBusy? "disabled":""}>${state.genBusy? `Generando ${state.genCount} tarjetas…` : `✨ Generar ${state.genCount} tarjetas con IA`}</button>
         </div>
       </div>
     `;
     if(due.length) $("#reviewBtn").onclick = startReview;
     $$("[data-topic]").forEach(b=> b.onclick = ()=>{ $("#topicInput").value=b.dataset.topic; state.genTopic=b.dataset.topic; });
     $("#topicInput").oninput = e=> state.genTopic = e.target.value;
+    $$("[data-count]").forEach(b=> b.onclick = ()=>{ state.genCount = +b.dataset.count; renderCardsScreen(); });
     $("#genBtn").onclick = ()=>{
       const topic = $("#topicInput").value.trim();
-      if(topic) generateDeck(topic); else toast("Escribe o elige un tema primero.");
+      if(topic) generateDeck(topic, state.genCount); else toast("Escribe o elige un tema primero.");
     };
     $$(".export-deck-btn").forEach(b=> b.onclick = (e)=>{
       e.stopPropagation();
@@ -2159,7 +2255,11 @@ No diagnósticos personales. Responde en español.`;
       deleteBtn.onclick = (e)=>{
         e.stopPropagation();
         deleteCard(card.id);
-        state.review.idx = Math.min(state.review.idx, state.review.queue.length - 2);
+        // Tras borrar, el arreglo se corrió una posición: el mismo idx ya
+        // apunta a la siguiente tarjeta. Solo hay que evitar que quede fuera
+        // de rango (idx negativo rompía el render con la tarjeta undefined).
+        if(state.review.idx >= state.review.queue.length) state.review.idx = state.review.queue.length;
+        state.review.flipped = false;
         render();
       };
     }
