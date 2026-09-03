@@ -1,0 +1,1273 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Sinapsis</title>
+<meta name="description" content="Tutor IA, flashcards, apuntes, agenda y presentaciones para estudiantes de medicina.">
+<meta name="theme-color" content="#5a3fa0">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Sinapsis">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Archivo:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --paper:#f6f2fb; --paper-soft:#efe8f9; --surface:#ffffff; --sage:#e5def2;
+    --ink:#2e2540; --ink-soft:#71678c; --ink-faint:#a99cc4; --line:#ddd0f0;
+    --hema:#8465c9; --hema-soft:#ece2fa; --hema-strong:#5a3fa0;
+    --eosin:#c06bab; --eosin-soft:#f8e6f3;
+    --good:#3f8f6d; --good-soft:#e3f2ea;
+    --warn:#c98a2c; --warn-soft:#faedd8;
+    --bad:#c0554f; --bad-soft:#f9e5e3;
+    --shadow: 0 1px 2px rgba(46,37,64,.06), 0 6px 20px rgba(46,37,64,.07);
+    --radius-s:10px; --radius-m:16px; --radius-l:24px;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --paper:#1c1728; --paper-soft:#241c33; --surface:#2a2138; --sage:#362d47;
+      --ink:#ede6f7; --ink-soft:#b6a8d1; --ink-faint:#7c6d99; --line:#3c3050;
+      --hema:#b198e8; --hema-soft:#362a52; --hema-strong:#d3c2f5;
+      --eosin:#e29bd1; --eosin-soft:#402c3d;
+      --good:#6fc4a0; --good-soft:#1e3830;
+      --warn:#e0ab5c; --warn-soft:#3a2f18;
+      --bad:#e2837c; --bad-soft:#3c231f;
+      --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.35);
+    }
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  html,body{height:100%;}
+  body{
+    margin:0; background:var(--paper); color:var(--ink);
+    font-family:"Archivo",system-ui,-apple-system,sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  h1,h2,h3,.display{ font-family:"Fraunces",Georgia,serif; text-wrap:balance; letter-spacing:-.01em; }
+  .mono{ font-family:"IBM Plex Mono",ui-monospace,monospace; font-variant-numeric:tabular-nums; }
+  button{ font-family:inherit; }
+  ::selection{ background:var(--eosin-soft); }
+  :focus-visible{ outline:2px solid var(--hema); outline-offset:2px; border-radius:4px; }
+
+  #app{ max-width:520px; margin:0 auto; min-height:100vh; display:flex; flex-direction:column; position:relative; }
+
+  .topbar{
+    position:sticky; top:0; z-index:20; display:flex; align-items:center; justify-content:space-between;
+    padding:14px 18px; background:color-mix(in srgb, var(--paper) 88%, transparent);
+    backdrop-filter:blur(8px); border-bottom:1px solid var(--line);
+  }
+  .brand{ display:flex; align-items:baseline; gap:9px; }
+  .brand-mark{ font-size:20px; }
+  .brand h1{ font-size:21px; font-weight:600; margin:0; color:var(--hema-strong); }
+  .badge-row{ display:flex; align-items:center; gap:8px; }
+  .streak-badge{
+    display:flex; align-items:center; gap:5px; background:var(--warn-soft); color:var(--warn);
+    padding:5px 10px 5px 8px; border-radius:999px; font-size:13px; font-weight:600;
+  }
+  .sync-flag{ font-size:10px; color:var(--ink-faint); border:1px solid var(--line); border-radius:999px; padding:3px 8px; }
+
+  main{ flex:1; padding:16px 16px 100px; overflow-x:hidden; }
+  .screen{ display:flex; flex-direction:column; gap:14px; animation:rise .28s ease both; }
+  @keyframes rise{ from{opacity:0; transform:translateY(6px);} to{opacity:1; transform:none;} }
+  @media (prefers-reduced-motion: reduce){ .screen{animation:none;} }
+
+  .eyebrow{
+    font-family:"IBM Plex Mono",monospace; font-size:10.5px; letter-spacing:.09em; text-transform:uppercase;
+    color:var(--ink-faint);
+  }
+  .section-title{ font-size:19px; font-weight:600; margin:0 0 2px; }
+  .section-head{ display:flex; align-items:baseline; justify-content:space-between; gap:8px; }
+  .lede{ color:var(--ink-soft); font-size:13.5px; line-height:1.5; margin:0; }
+
+  .card{
+    background:var(--surface); border:1px solid var(--line); border-radius:var(--radius-m);
+    padding:16px; box-shadow:var(--shadow);
+  }
+  .specimen-tag{
+    display:inline-flex; align-items:center; gap:6px; font-family:"IBM Plex Mono",monospace;
+    font-size:10px; letter-spacing:.08em; text-transform:uppercase; color:var(--hema);
+    background:var(--hema-soft); border-radius:5px; padding:3px 7px; width:fit-content;
+  }
+
+  .banner{
+    display:flex; gap:10px; align-items:flex-start; background:var(--hema-soft); border:1px solid var(--line);
+    border-radius:var(--radius-m); padding:12px 14px;
+  }
+  .banner .bicon{ font-size:18px; line-height:1.3; }
+  .banner b{ color:var(--hema-strong); }
+  .banner .bline{ font-size:13px; line-height:1.5; color:var(--ink); }
+  .banner .bline + .bline{ margin-top:2px; }
+
+  .btn{
+    border:none; cursor:pointer; border-radius:var(--radius-s); font-weight:600; font-size:14.5px;
+    padding:12px 18px; display:inline-flex; align-items:center; justify-content:center; gap:7px;
+    transition:transform .12s ease, opacity .12s ease;
+  }
+  .btn:active{ transform:scale(.97); }
+  .btn:disabled{ opacity:.5; cursor:default; transform:none; }
+  .btn-primary{ background:var(--hema); color:#fff; width:100%; }
+  .btn-ghost{ background:transparent; color:var(--hema); border:1px solid var(--line); }
+  .btn-soft{ background:var(--hema-soft); color:var(--hema-strong); }
+  .btn-eosin{ background:var(--eosin); color:#fff; }
+  .btn-sm{ padding:8px 13px; font-size:12.5px; border-radius:8px; }
+  .btn-icon{ background:var(--sage); color:var(--ink); width:44px; height:44px; padding:0; border-radius:12px; flex:none; }
+  .btn-icon.on{ background:var(--eosin); color:#fff; }
+  .btn-block{ width:100%; }
+
+  .chip-row{ display:flex; flex-wrap:wrap; gap:8px; }
+  .chip{
+    border:1px solid var(--line); background:var(--paper-soft); color:var(--ink); border-radius:999px;
+    padding:8px 13px; font-size:13px; cursor:pointer; font-weight:500;
+  }
+  .chip:hover{ border-color:var(--hema); }
+  .chip.active{ background:var(--hema); color:#fff; border-color:var(--hema); }
+
+  textarea, input[type=text], input[type=date], input[type=time], input[type=password], select{
+    width:100%; border:1px solid var(--line); background:var(--paper-soft); color:var(--ink);
+    border-radius:var(--radius-s); padding:11px 13px; font-family:inherit; font-size:14.5px; resize:vertical;
+  }
+  textarea:focus, input:focus, select:focus{ border-color:var(--hema); }
+  label{ font-size:12.5px; font-weight:600; color:var(--ink-soft); display:block; margin-bottom:6px; }
+  .field{ display:flex; flex-direction:column; gap:4px; }
+  .field-row{ display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+
+  /* Tutor */
+  .chat-log{ display:flex; flex-direction:column; gap:10px; }
+  .bubble{ max-width:86%; padding:11px 14px; border-radius:16px; font-size:14.5px; line-height:1.48; }
+  .bubble.user{ align-self:flex-end; background:var(--eosin); color:#fff; border-bottom-right-radius:4px; }
+  .bubble.assistant{ align-self:flex-start; background:var(--hema-soft); color:var(--ink); border-bottom-left-radius:4px; }
+  .bubble.assistant.thinking{ color:var(--ink-faint); font-style:italic; }
+  .msg-actions{ display:flex; gap:6px; align-self:flex-start; margin-top:-4px; }
+  .composer{ position:sticky; bottom:82px; display:flex; gap:8px; background:var(--paper); padding-top:4px; }
+  .composer textarea{ flex:1; max-height:110px; }
+
+  /* Flashcards */
+  .stat-row{ display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }
+  .stat-tile{ background:var(--surface); border:1px solid var(--line); border-radius:var(--radius-m); padding:12px; text-align:center; }
+  .stat-num{ font-size:22px; font-weight:600; }
+  .stat-label{ font-size:10.5px; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.06em; margin-top:2px; }
+
+  .flip-scene{ perspective:1200px; }
+  .flip-card{
+    position:relative; width:100%; min-height:210px; transform-style:preserve-3d;
+    transition:transform .5s cubic-bezier(.4,.2,.2,1); cursor:pointer;
+  }
+  .flip-card.flipped{ transform:rotateY(180deg); }
+  .flip-face{
+    position:absolute; inset:0; backface-visibility:hidden; border-radius:var(--radius-l);
+    display:flex; flex-direction:column; justify-content:center; gap:12px; padding:26px; border:1px solid var(--line);
+  }
+  .flip-face.front{ background:var(--surface); }
+  .flip-face.back{ background:var(--eosin-soft); transform:rotateY(180deg); }
+  .flip-text{ font-family:"Fraunces",serif; font-size:19px; font-weight:500; line-height:1.35; }
+  .flip-hint{ position:absolute; bottom:14px; left:0; right:0; text-align:center; font-size:11px; color:var(--ink-faint); }
+
+  .grade-row{ display:grid; grid-template-columns:repeat(4,1fr); gap:8px; }
+  .grade-btn{ flex-direction:column; gap:2px; padding:10px 4px; }
+  .grade-btn small{ font-weight:400; font-size:10.5px; opacity:.85; }
+  .g-again{ background:var(--bad-soft); color:var(--bad); }
+  .g-hard{ background:var(--warn-soft); color:var(--warn); }
+  .g-good{ background:var(--good-soft); color:var(--good); }
+  .g-easy{ background:var(--hema-soft); color:var(--hema); }
+
+  .deck-item{ display:flex; align-items:center; gap:12px; padding:13px 14px; border:1px solid var(--line); border-radius:var(--radius-m); background:var(--surface); }
+  .deck-swatch{ width:8px; align-self:stretch; border-radius:6px; background:var(--hema); flex:none; }
+  .deck-info{ flex:1; min-width:0; }
+  .deck-name{ font-weight:600; font-size:14.5px; }
+  .deck-meta{ font-size:12px; color:var(--ink-soft); margin-top:2px; }
+  .deck-actions{ display:flex; flex-direction:column; align-items:flex-end; gap:6px; flex:none; }
+  .due-pill{ font-size:11px; font-weight:700; background:var(--warn-soft); color:var(--warn); border-radius:999px; padding:4px 9px; flex:none; white-space:nowrap; }
+  .due-pill.zero{ background:var(--good-soft); color:var(--good); }
+  .due-pill.over{ background:var(--bad-soft); color:var(--bad); }
+  .icon-link{ background:none; border:none; color:var(--ink-faint); font-size:11px; cursor:pointer; padding:2px; }
+
+  /* Notes */
+  .mode-switch{ display:flex; gap:8px; }
+  .mode-switch .chip{ flex:1; text-align:center; }
+  .note-item{ border:1px solid var(--line); border-radius:var(--radius-m); background:var(--surface); overflow:hidden; }
+  .note-head{ padding:13px 14px; display:flex; justify-content:space-between; gap:8px; cursor:pointer; }
+  .note-title{ font-weight:600; font-size:14.5px; }
+  .note-date{ font-size:11px; color:var(--ink-faint); }
+  .note-body{ padding:0 14px 14px; display:flex; flex-direction:column; gap:10px; }
+  .term-chip{ background:var(--sage); border-radius:8px; padding:8px 10px; font-size:12.5px; }
+  .term-chip b{ display:block; font-size:12.5px; margin-bottom:2px; }
+  .note-btn-row{ display:flex; gap:8px; flex-wrap:wrap; }
+
+  .rec-panel{ display:flex; flex-direction:column; align-items:center; gap:14px; padding:22px 10px; }
+  .rec-circle{
+    width:84px; height:84px; border-radius:50%; border:none; background:var(--eosin); color:#fff; font-size:30px;
+    display:flex; align-items:center; justify-content:center; cursor:pointer; box-shadow:0 0 0 0 rgba(192,107,171,.5);
+  }
+  .rec-circle.active{ animation:pulse 1.6s infinite; }
+  @keyframes pulse{ 0%{box-shadow:0 0 0 0 rgba(192,107,171,.45);} 70%{box-shadow:0 0 0 18px rgba(192,107,171,0);} 100%{box-shadow:0 0 0 0 rgba(192,107,171,0);} }
+  .rec-timer{ font-size:26px; }
+  .rec-status{ font-size:12.5px; color:var(--ink-soft); }
+  .transcript-box{ width:100%; min-height:90px; max-height:220px; overflow-y:auto; }
+
+  .photo-drop{ border:1.5px dashed var(--line); border-radius:var(--radius-m); padding:22px; text-align:center; display:flex; flex-direction:column; align-items:center; gap:10px; cursor:pointer; }
+  .photo-preview{ width:100%; border-radius:var(--radius-m); border:1px solid var(--line); display:block; max-height:280px; object-fit:cover; }
+  .answer-box{ background:var(--hema-soft); border-radius:var(--radius-m); padding:13px 14px; font-size:14px; line-height:1.5; white-space:pre-wrap; }
+
+  /* Agenda */
+  .day-group{ display:flex; flex-direction:column; gap:8px; }
+  .day-label{ font-family:"IBM Plex Mono",monospace; font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:var(--ink-faint); margin-top:4px; }
+  .sched-item, .reminder-item{ display:flex; align-items:center; gap:12px; padding:11px 13px; border:1px solid var(--line); border-radius:var(--radius-m); background:var(--surface); }
+  .sched-time{ font-family:"IBM Plex Mono",monospace; font-size:13px; color:var(--hema-strong); font-weight:600; min-width:52px; }
+  .sched-info{ flex:1; min-width:0; }
+  .sched-subject{ font-weight:600; font-size:14px; }
+  .sched-place{ font-size:11.5px; color:var(--ink-soft); }
+  .type-chip{ font-size:10px; text-transform:uppercase; letter-spacing:.05em; padding:2px 7px; border-radius:5px; background:var(--sage); color:var(--ink-soft); width:fit-content; margin-bottom:2px; }
+
+  /* Progress */
+  .bars{ display:flex; align-items:flex-end; gap:8px; height:90px; }
+  .bar-col{ flex:1; display:flex; flex-direction:column; align-items:center; gap:6px; height:100%; justify-content:flex-end; }
+  .bar{ width:100%; border-radius:5px 5px 2px 2px; background:var(--sage); min-height:4px; }
+  .bar.active{ background:var(--hema); }
+  .bar-label{ font-size:10px; color:var(--ink-faint); }
+
+  .empty-note{ font-size:13px; color:var(--ink-soft); text-align:center; padding:18px 10px; }
+  details.adv summary{ cursor:pointer; font-size:12.5px; color:var(--ink-soft); font-weight:600; }
+  details.adv[open] summary{ margin-bottom:8px; }
+
+  /* Tab bar */
+  .tabbar{
+    position:fixed; left:0; right:0; bottom:0; max-width:520px; margin:0 auto;
+    display:grid; grid-template-columns:repeat(5,1fr); background:var(--surface); border-top:1px solid var(--line);
+    padding:7px 4px calc(7px + env(safe-area-inset-bottom)); box-shadow:0 -6px 20px rgba(0,0,0,.05);
+  }
+  .tab{
+    background:none; border:none; display:flex; flex-direction:column; align-items:center; gap:2px;
+    color:var(--ink-faint); font-size:9.5px; font-weight:600; padding:5px 1px; cursor:pointer; border-radius:10px;
+  }
+  .tab .ticon{ font-size:17px; }
+  .tab.active{ color:var(--hema); }
+
+  .toast{
+    position:fixed; left:50%; bottom:96px; transform:translateX(-50%); background:var(--ink); color:var(--paper);
+    padding:10px 16px; border-radius:999px; font-size:13px; z-index:50; box-shadow:var(--shadow); max-width:88%;
+    text-align:center; animation:toastin .25s ease both;
+  }
+  @keyframes toastin{ from{opacity:0; transform:translate(-50%,8px);} to{opacity:1; transform:translate(-50%,0);} }
+
+  ::-webkit-scrollbar{ width:0; height:0; }
+</style>
+</head>
+<body>
+
+<div id="app">
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark">🔬</span><h1>Sinapsis</h1></div>
+    <div class="badge-row">
+      <div class="streak-badge"><span>🔥</span><span class="mono" id="streakCount">0</span></div>
+      <span class="sync-flag mono">en este dispositivo</span>
+    </div>
+  </header>
+  <main id="content"></main>
+  <nav class="tabbar">
+    <button class="tab active" data-tab="tutor"><span class="ticon">💬</span>Tutor</button>
+    <button class="tab" data-tab="cards"><span class="ticon">🗂️</span>Tarjetas</button>
+    <button class="tab" data-tab="notes"><span class="ticon">📝</span>Apuntes</button>
+    <button class="tab" data-tab="agenda"><span class="ticon">📅</span>Agenda</button>
+    <button class="tab" data-tab="progress"><span class="ticon">📈</span>Progreso</button>
+  </nav>
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  /* ---------- API config ---------- */
+  // Clave incrustada a pedido — cualquiera con este enlace podría verla y usarla.
+  // Si deja de funcionar, se puede pegar una clave nueva en Progreso → Clave de IA.
+  const EMBEDDED_API_KEY = "PEGA_AQUI_TU_API_KEY_DE_ANTHROPIC";
+  const MODEL_MAIN = "claude-sonnet-5";
+  const MODEL_QUICK = "claude-haiku-4-5-20251001";
+
+  function activeApiKey(){ return (localStorage.getItem("sinapsis.apiKeyOverride") || "").trim() || EMBEDDED_API_KEY; }
+
+  async function callClaude(messages, { system, model, maxTokens } = {}){
+    const key = activeApiKey();
+    if(!key) throw { code: "no_key" };
+    let resp;
+    try{
+      resp = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-api-key": key,
+          "anthropic-version": "2023-06-01",
+          "anthropic-dangerous-direct-browser-access": "true",
+        },
+        body: JSON.stringify({
+          model: model || MODEL_MAIN,
+          max_tokens: maxTokens || 1024,
+          system: system || undefined,
+          messages,
+        }),
+      });
+    }catch(e){ throw { code: "network" }; }
+    if(!resp.ok){
+      let body = null;
+      try{ body = await resp.json(); }catch(e){}
+      throw { code: (body && body.error && body.error.type) || "http_" + resp.status, message: body && body.error && body.error.message };
+    }
+    const data = await resp.json();
+    const text = (data.content || []).filter(b=>b.type==="text").map(b=>b.text).join("\n");
+    return { text };
+  }
+
+  function extractJson(text){
+    let s = text.trim();
+    const fence = s.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if(fence) s = fence[1].trim();
+    try{ return JSON.parse(s); }catch(e){}
+    const start = Math.min(...["{","["].map(c=>{ const i = s.indexOf(c); return i===-1? Infinity : i; }));
+    const endCurly = s.lastIndexOf("}"), endSquare = s.lastIndexOf("]");
+    const end = Math.max(endCurly, endSquare);
+    if(start!==Infinity && end!==-1){
+      try{ return JSON.parse(s.slice(start, end+1)); }catch(e){}
+    }
+    throw { code: "invalid_json" };
+  }
+
+  async function callClaudeJSON(prompt, opts){
+    const { text } = await callClaude([{ role:"user", content: prompt }], opts);
+    return extractJson(text);
+  }
+
+  function imageFileToBlock(file){
+    return new Promise((resolve, reject)=>{
+      const reader = new FileReader();
+      reader.onload = ()=>{
+        const dataUrl = reader.result;
+        const base64 = dataUrl.slice(dataUrl.indexOf(",")+1);
+        resolve({ type:"image", source:{ type:"base64", media_type: file.type || "image/jpeg", data: base64 } });
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  }
+
+  /* ---------- state ---------- */
+  const state = {
+    tab: "tutor",
+    chat: [], chatBusy:false, listening:false, speakingIdx:null,
+    decks: [], cards: [], notes: [],
+    schedule: [], reminders: [],
+    profile: { stage: "Primer semestre" }, stageDraft:"",
+    stats: { streakDays:0, lastStudyDate:null, totalReviews:0, correctReviews:0, daily:{} },
+    review: { active:false, queue:[], idx:0, flipped:false },
+    genTopic:"", genBusy:false,
+    notesMode:"write", notesBusy:false, notesDraftTitle:"", notesDraftText:"",
+    rec: { active:false, seconds:0, transcript:"", chunks:[], mediaRecorder:null, recog:null, timerId:null, audioBlob:null },
+    photo: { file:null, previewUrl:null, question:"", answer:"", asking:false },
+    schedForm: { day:"Lunes", time:"", subject:"", place:"" },
+    remForm: { title:"", type:"Parcial", date:"", subject:"" },
+    pptxReady:false, pptxLoading:false, apiKeyDraft:"",
+  };
+
+  const PRESET_TOPICS = ["Anatomía general","Histología","Bioquímica básica","Embriología","Terminología médica","Fisiología celular"];
+  const PROMPTS = ["Explícame la mitosis como si fuera mi primera clase","¿Cuál es la diferencia entre epitelio simple y estratificado?","Dame un truco para memorizar los pares craneales","¿Para qué sirve el ciclo de Krebs, en resumen?"];
+  const DAYS = ["Lunes","Martes","Miércoles","Jueves","Viernes","Sábado","Domingo"];
+  const REM_TYPES = ["Parcial","Entrega","Trabajo"];
+  const LS = {
+    decks:"sinapsis.decks", cards:"sinapsis.cards", notes:"sinapsis.notes",
+    schedule:"sinapsis.schedule", reminders:"sinapsis.reminders",
+    stats:"sinapsis.stats", chat:"sinapsis.chat", profile:"sinapsis.profile",
+  };
+
+  const $ = (sel,el=document)=>el.querySelector(sel);
+  const $$ = (sel,el=document)=>Array.from(el.querySelectorAll(sel));
+  const content = $("#content");
+  const todayStr = ()=> new Date().toISOString().slice(0,10);
+  const escapeHtml = s => (s||"").replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+  const stageLabel = ()=> state.profile.stage || "Primer semestre";
+
+  function lsGet(key, fallback){ try{ const v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback; }catch(e){ return fallback; } }
+  function lsSet(key, val){ try{ localStorage.setItem(key, JSON.stringify(val)); }catch(e){} }
+
+  function toast(msg){
+    const t = document.createElement("div");
+    t.className = "toast"; t.textContent = msg;
+    document.body.appendChild(t);
+    setTimeout(()=>t.remove(), 2600);
+  }
+
+  function errorCopy(e){
+    const code = e && e.code, msg = (e && e.message) || "";
+    if(/credit balance/i.test(msg)) return "La cuenta de la API no tiene saldo. Hay que cargar crédito en console.anthropic.com → Plans & Billing.";
+    return ({
+      no_key:"Falta configurar la clave de IA (Progreso → Clave de IA).",
+      network:"No hay conexión a internet en este momento.",
+      authentication_error:"La clave de IA no es válida o fue revocada.",
+      permission_error:"La clave de IA no tiene permiso para esto.",
+      rate_limit_error:"Muchas solicitudes seguidas. Espera un momento y vuelve a intentar.",
+      overloaded_error:"El servicio de IA está saturado ahora mismo. Intenta de nuevo en un momento.",
+      invalid_request_error:"Hubo un problema con la solicitud. Intenta de nuevo.",
+      invalid_json:"Hubo un problema con el formato de la respuesta. Intenta de nuevo.",
+    })[code] || "Ocurrió un error inesperado. Intenta de nuevo.";
+  }
+
+  /* ---------- boot ---------- */
+  function loadAll(){
+    state.decks = lsGet(LS.decks, []);
+    state.cards = lsGet(LS.cards, []);
+    state.notes = lsGet(LS.notes, []);
+    state.schedule = lsGet(LS.schedule, []);
+    state.reminders = lsGet(LS.reminders, []);
+    state.stats = Object.assign(state.stats, lsGet(LS.stats, {}));
+    state.chat = lsGet(LS.chat, []);
+    state.profile = Object.assign(state.profile, lsGet(LS.profile, {}));
+    if(!state.decks.length) seedLocalExample();
+    state.stageDraft = stageLabel();
+  }
+
+  function seedLocalExample(){
+    const deckId = "example-deck";
+    state.decks.push({ id: deckId, name:"Ejemplo · Tejido epitelial", topic:"Histología", example:true, createdAt: Date.now() });
+    const ex = [
+      ["¿Qué caracteriza al epitelio simple?","Una sola capa de células, típica de sitios de absorción o filtración (ej. alvéolos, capilares)."],
+      ["¿Qué es el epitelio estratificado?","Varias capas de células; protege superficies sometidas a fricción, como la piel o el esófago."],
+      ["¿Qué es una unión estrecha (tight junction)?","Un tipo de unión intercelular que sella el espacio entre células, impidiendo el paso de sustancias entre ellas."],
+    ];
+    ex.forEach(([front,back],i)=> state.cards.push(mkCard(deckId, front, back, i===0)));
+  }
+
+  function mkCard(deckId, front, back, dueNow){
+    return { id:"c"+Math.random().toString(36).slice(2,10), deckId, front, back,
+      ease:2.5, interval:0, reps:0, dueAt: dueNow ? new Date().toISOString() : new Date(Date.now()+86400000).toISOString(),
+      lastResult:null, example: deckId==="example-deck" };
+  }
+
+  function saveDeckAndCards(deck, cards){
+    state.decks.push(deck); cards.forEach(c=>state.cards.push(c));
+    lsSet(LS.decks, state.decks); lsSet(LS.cards, state.cards);
+  }
+  function saveCard(card){
+    const idx = state.cards.findIndex(c=>c.id===card.id);
+    if(idx>-1) state.cards[idx] = card; else state.cards.push(card);
+    lsSet(LS.cards, state.cards);
+  }
+  function saveNote(note){ state.notes.unshift(note); lsSet(LS.notes, state.notes); }
+  function saveStats(){ lsSet(LS.stats, state.stats); }
+  function saveChat(){ lsSet(LS.chat, state.chat.slice(-40)); }
+  function saveProfile(){ lsSet(LS.profile, state.profile); }
+  function saveSchedule(){ lsSet(LS.schedule, state.schedule); }
+  function saveReminders(){ lsSet(LS.reminders, state.reminders); }
+
+  /* ---------- SM-2 ---------- */
+  function sm2(card, quality){
+    let { ease=2.5, interval=0, reps=0 } = card;
+    if(quality < 3){ reps = 0; interval = 1; }
+    else{
+      reps += 1;
+      if(reps===1) interval = 1;
+      else if(reps===2) interval = 6;
+      else interval = Math.round(interval * ease);
+    }
+    ease = Math.max(1.3, ease + (0.1 - (5-quality)*(0.08+(5-quality)*0.02)));
+    const dueAt = new Date(Date.now() + interval*86400000).toISOString();
+    return { ease: Math.round(ease*100)/100, interval, reps, dueAt, lastResult: quality };
+  }
+
+  function recordReview(card, quality){
+    const updated = Object.assign({}, card, sm2(card, quality));
+    saveCard(updated);
+    const day = todayStr();
+    state.stats.totalReviews += 1;
+    if(quality>=3) state.stats.correctReviews += 1;
+    state.stats.daily[day] = (state.stats.daily[day]||0) + 1;
+    if(state.stats.lastStudyDate !== day){
+      const yest = new Date(Date.now()-86400000).toISOString().slice(0,10);
+      state.stats.streakDays = (state.stats.lastStudyDate===yest) ? state.stats.streakDays+1 : 1;
+      state.stats.lastStudyDate = day;
+    }
+    saveStats();
+    $("#streakCount").textContent = state.stats.streakDays;
+  }
+
+  function dueCards(){
+    const now = new Date().toISOString();
+    return state.cards.filter(c=>c.dueAt<=now).sort((a,b)=>a.dueAt.localeCompare(b.dueAt));
+  }
+
+  /* ---------- Agenda helpers ---------- */
+  function todayName(){ return DAYS[(new Date().getDay()+6)%7]; }
+  function daysUntil(dateStr){
+    const today = new Date(todayStr()+"T00:00:00");
+    const target = new Date(dateStr+"T00:00:00");
+    return Math.round((target-today)/86400000);
+  }
+  function remindersSorted(){ return [...state.reminders].sort((a,b)=> a.date.localeCompare(b.date)); }
+  function upcomingSoon(){ return remindersSorted().filter(r=> daysUntil(r.date) >= 0 && daysUntil(r.date) <= 3); }
+  function todayClasses(){ return state.schedule.filter(s=>s.day===todayName()).sort((a,b)=>a.time.localeCompare(b.time)); }
+
+  function agendaBannerHtml(){
+    const classes = todayClasses(), soon = upcomingSoon();
+    if(!classes.length && !soon.length) return "";
+    const lines = [];
+    if(classes.length) lines.push(`<div class="bline">📅 <b>Hoy:</b> ${classes.map(c=>`${escapeHtml(c.subject)} ${c.time}`).join(" · ")}</div>`);
+    soon.forEach(r=>{
+      const d = daysUntil(r.date);
+      const when = d===0 ? "¡hoy!" : d===1 ? "mañana" : `en ${d} días`;
+      lines.push(`<div class="bline">⏰ <b>${escapeHtml(r.type)}${r.subject? " de "+escapeHtml(r.subject):""}:</b> ${escapeHtml(r.title)} — ${when}</div>`);
+    });
+    return `<div class="banner"><span class="bicon">🔔</span><div>${lines.join("")}</div></div>`;
+  }
+
+  /* ---------- Voice ---------- */
+  const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition || null;
+  const canListen = !!SpeechRec;
+  const canSpeak = "speechSynthesis" in window;
+
+  function startDictation(onFinal){
+    if(!canListen) return null;
+    const rec = new SpeechRec();
+    rec.lang = (navigator.language||"es-ES").startsWith("es") ? navigator.language : "es-ES";
+    rec.interimResults = true; rec.continuous = false;
+    let finalText = "";
+    rec.onresult = (e)=>{
+      let interim = "";
+      for(let i=e.resultIndex;i<e.results.length;i++){
+        const t = e.results[i][0].transcript;
+        if(e.results[i].isFinal) finalText += t; else interim += t;
+      }
+      onFinal(finalText + interim, e.results[e.results.length-1].isFinal);
+    };
+    rec.onerror = ()=>{};
+    try{ rec.start(); }catch(e){ return null; }
+    return rec;
+  }
+
+  function speakText(text, idx, onEnd){
+    if(!canSpeak) return;
+    window.speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = (navigator.language||"es-ES").startsWith("es") ? navigator.language : "es-ES";
+    u.onend = onEnd; u.onerror = onEnd;
+    window.speechSynthesis.speak(u);
+  }
+
+  function browserSave(filename, data){
+    const blob = data instanceof Blob ? data : new Blob([data], { type: filename.endsWith(".md") ? "text/markdown" : "application/octet-stream" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url), 4000);
+  }
+
+  /* ---------- AI features ---------- */
+  async function generateDeck(topic){
+    state.genBusy = true; render();
+    try{
+      const prompt = `Eres profesor de medicina creando tarjetas de estudio para una estudiante en la etapa "${stageLabel()}".
+Tema: "${topic}". Genera exactamente 10 tarjetas en español, con el nivel de dificultad adecuado para esa etapa, precisas y sin relleno.
+Cada tarjeta: "front" es una pregunta o término breve; "back" es la respuesta, clara y concreta, máximo 2-3 frases.
+Responde SOLO con un array JSON de 10 objetos: [{"front":"...","back":"..."}, ...] sin texto adicional.`;
+      const arr = await callClaudeJSON(prompt, { maxTokens:1600 });
+      if(!Array.isArray(arr) || !arr.length) throw {code:"invalid_json"};
+      const deckId = "d"+Math.random().toString(36).slice(2,10);
+      const deck = { id:deckId, name:topic, topic, createdAt: Date.now() };
+      const cards = arr.slice(0,12).map(c=> mkCard(deckId, String(c.front||"").trim(), String(c.back||"").trim(), true));
+      saveDeckAndCards(deck, cards);
+      toast(`Mazo "${topic}" creado con ${cards.length} tarjetas.`);
+    }catch(e){ toast(errorCopy(e)); }
+    finally{ state.genBusy = false; state.genTopic=""; render(); }
+  }
+
+  async function askTutor(text){
+    state.chat.push({ role:"user", content:text });
+    state.chatBusy = true; render();
+    const SYSTEM = `Eres un tutor paciente para una estudiante de medicina en la etapa "${stageLabel()}". Ajusta la profundidad de tus explicaciones a esa etapa. Explica con precisión pero en lenguaje sencillo, con analogías breves cuando ayuden. Usa párrafos cortos. No des diagnósticos sobre personas reales; si preguntan por síntomas propios, sugiere consultar a un médico. Responde en español.`;
+    try{
+      const { text: answer } = await callClaude(state.chat, { system: SYSTEM, maxTokens:1024 });
+      state.chat.push({ role:"assistant", content: answer });
+      saveChat();
+    }catch(e){
+      state.chat.push({ role:"assistant", content: "⚠️ " + errorCopy(e) });
+    }
+    finally{ state.chatBusy = false; render(); }
+  }
+
+  async function turnAnswerIntoCards(answerText, topicHint){
+    toast("Generando tarjetas de esta respuesta…");
+    try{
+      const prompt = `A partir de este texto de estudio para una estudiante de medicina (etapa: ${stageLabel()}), crea hasta 5 tarjetas de repaso en español.
+Texto:\n"""${answerText.slice(0,3000)}"""\nResponde SOLO con un array JSON: [{"front":"...","back":"..."}, ...]`;
+      const arr = await callClaudeJSON(prompt, { model: MODEL_QUICK, maxTokens:900 });
+      if(!Array.isArray(arr) || !arr.length) throw {code:"invalid_json"};
+      const deckId = "d"+Math.random().toString(36).slice(2,10);
+      const deck = { id:deckId, name: topicHint || "Del tutor", topic: topicHint || "Tutor", createdAt: Date.now() };
+      const cards = arr.slice(0,5).map(c=>mkCard(deckId, String(c.front||"").trim(), String(c.back||"").trim(), true));
+      saveDeckAndCards(deck, cards);
+      toast(`Tarjetas añadidas al mazo "${deck.name}".`);
+      if(state.tab==="cards") render();
+    }catch(e){ toast(errorCopy(e)); }
+  }
+
+  async function summarizeNote(title, rawText, defaultTitle){
+    state.notesBusy = true; render();
+    try{
+      const prompt = `Resume estos apuntes de una estudiante de medicina (etapa: ${stageLabel()}) y extrae términos clave.
+Apuntes:\n"""${rawText.slice(0,4000)}"""
+Responde SOLO con un objeto JSON: {"summary": "resumen en 3-5 frases en español", "terms": [{"term":"...","definition":"definición breve"}] (máximo 6 términos)}`;
+      const data = await callClaudeJSON(prompt, { maxTokens:900 });
+      const note = { id:"n"+Math.random().toString(36).slice(2,10), title: title || defaultTitle || "Apunte sin título",
+        rawText, summary: data.summary || "", terms: Array.isArray(data.terms)? data.terms.slice(0,6): [],
+        createdAt: Date.now() };
+      saveNote(note);
+      state.notesDraftTitle = ""; state.notesDraftText = "";
+      state.rec.transcript = ""; state.rec.audioBlob = null;
+      toast("Apunte resumido y guardado.");
+      state.notesMode = "write";
+    }catch(e){ toast(errorCopy(e)); }
+    finally{ state.notesBusy = false; render(); }
+  }
+
+  async function cardsFromNote(note){
+    toast("Generando tarjetas del apunte…");
+    try{
+      const prompt = `Crea hasta 6 tarjetas de repaso en español a partir de este resumen de apuntes de medicina (etapa: ${stageLabel()}).
+Resumen: """${note.summary}"""
+Términos: ${JSON.stringify(note.terms||[])}
+Responde SOLO con un array JSON: [{"front":"...","back":"..."}, ...]`;
+      const arr = await callClaudeJSON(prompt, { model: MODEL_QUICK, maxTokens:900 });
+      if(!Array.isArray(arr) || !arr.length) throw {code:"invalid_json"};
+      const deckId = "d"+Math.random().toString(36).slice(2,10);
+      const deck = { id:deckId, name: note.title, topic:"Apuntes", createdAt: Date.now() };
+      const cards = arr.slice(0,6).map(c=>mkCard(deckId, String(c.front||"").trim(), String(c.back||"").trim(), true));
+      saveDeckAndCards(deck, cards);
+      toast(`Mazo "${note.title}" creado desde tus apuntes.`);
+    }catch(e){ toast(errorCopy(e)); }
+  }
+
+  async function askAboutPhoto(){
+    if(!state.photo.file){ toast("Primero toma o sube una foto."); return; }
+    const q = state.photo.question.trim() || "Explica claramente qué se ve en esta imagen, a nivel de estudiante de medicina.";
+    state.photo.asking = true; render();
+    try{
+      const imgBlock = await imageFileToBlock(state.photo.file);
+      const { text } = await callClaude(
+        [{ role:"user", content:[ imgBlock, { type:"text", text:q } ] }],
+        { system:`Eres tutor de una estudiante de medicina (etapa: ${stageLabel()}). Responde en español.`, maxTokens:900 }
+      );
+      state.photo.answer = text;
+    }catch(e){ toast(errorCopy(e)); state.photo.answer = ""; }
+    finally{ state.photo.asking = false; render(); }
+  }
+
+  function saveAnswerAsNote(){
+    if(!state.photo.answer) return;
+    const note = { id:"n"+Math.random().toString(36).slice(2,10), title:"Foto — "+new Date().toLocaleDateString(),
+      rawText: state.photo.question, summary: state.photo.answer, terms: [], createdAt: Date.now() };
+    saveNote(note);
+    toast("Guardado en tus apuntes.");
+    state.photo = { file:null, previewUrl:null, question:"", answer:"", asking:false };
+    render();
+  }
+
+  /* ---------- Class recording ---------- */
+  function startRecording(){
+    state.rec = { active:true, seconds:0, transcript:"", chunks:[], mediaRecorder:null, recog:null, timerId:null, audioBlob:null };
+    render();
+    state.rec.timerId = setInterval(()=>{ state.rec.seconds++; const el=$("#recTimer"); if(el) el.textContent = fmtTime(state.rec.seconds); }, 1000);
+
+    navigator.mediaDevices?.getUserMedia({ audio:true }).then(stream=>{
+      try{
+        const mr = new MediaRecorder(stream);
+        mr.ondataavailable = e=>{ if(e.data.size>0) state.rec.chunks.push(e.data); };
+        mr.onstop = ()=>{ state.rec.audioBlob = new Blob(state.rec.chunks, {type: mr.mimeType||"audio/webm"}); stream.getTracks().forEach(t=>t.stop()); render(); };
+        mr.start();
+        state.rec.mediaRecorder = mr;
+      }catch(e){}
+    }).catch(()=>{ toast("No se pudo acceder al micrófono (revisa el permiso del navegador)."); });
+
+    if(canListen){
+      const runRecognition = ()=>{
+        if(!state.rec.active) return;
+        const rec = new SpeechRec();
+        rec.lang = (navigator.language||"es-ES").startsWith("es") ? navigator.language : "es-ES";
+        rec.continuous = true; rec.interimResults = true;
+        let sessionFinal = "";
+        rec.onresult = (e)=>{
+          let interim = "";
+          for(let i=e.resultIndex;i<e.results.length;i++){
+            const t = e.results[i][0].transcript;
+            if(e.results[i].isFinal) sessionFinal += t + " "; else interim += t;
+          }
+          const box = $("#transcriptBox");
+          if(box) box.value = (state.rec.transcript + " " + sessionFinal + " " + interim).trim();
+        };
+        rec.onend = ()=>{
+          state.rec.transcript = (state.rec.transcript + " " + sessionFinal).trim();
+          if(state.rec.active) runRecognition();
+        };
+        rec.onerror = ()=>{};
+        try{ rec.start(); state.rec.recog = rec; }catch(e){}
+      };
+      runRecognition();
+    }
+  }
+
+  function stopRecording(){
+    state.rec.active = false;
+    clearInterval(state.rec.timerId);
+    if(state.rec.recog){ try{ state.rec.recog.stop(); }catch(e){} }
+    if(state.rec.mediaRecorder && state.rec.mediaRecorder.state !== "inactive"){ try{ state.rec.mediaRecorder.stop(); }catch(e){} }
+    setTimeout(render, 300);
+  }
+
+  function fmtTime(s){ const m = Math.floor(s/60), r = s%60; return `${m}:${String(r).padStart(2,"0")}`; }
+
+  function saveRecordingAudio(){
+    if(!state.rec.audioBlob){ toast("No hay audio para guardar."); return; }
+    browserSave(`clase-${todayStr()}.webm`, state.rec.audioBlob);
+    toast("Audio descargado.");
+  }
+
+  /* ---------- Presentations ---------- */
+  function ensurePptxLib(){
+    if(state.pptxReady || state.pptxLoading) return;
+    state.pptxLoading = true;
+    const s = document.createElement("script");
+    s.src = "https://cdnjs.cloudflare.com/ajax/libs/pptxgenjs/3.12.0/pptxgen.bundle.js";
+    s.onload = ()=>{ state.pptxReady = !!window.PptxGenJS; state.pptxLoading = false; };
+    s.onerror = ()=>{ state.pptxReady = false; state.pptxLoading = false; };
+    document.head.appendChild(s);
+  }
+  ensurePptxLib();
+
+  async function generatePresentation(title, materialText){
+    toast("Generando presentación…");
+    let outline;
+    try{
+      const prompt = `Convierte este material de estudio de medicina en un esquema de presentación (título de la presentación y 5-8 diapositivas).
+Material ("""${title}"""): """${materialText.slice(0,3500)}"""
+Responde SOLO con JSON: {"title":"...", "slides":[{"title":"...","bullets":["...", "..."]}]} (2-4 bullets breves por diapositiva, en español).`;
+      outline = await callClaudeJSON(prompt, { maxTokens:1800 });
+    }catch(e){ toast(errorCopy(e)); return; }
+
+    if(state.pptxReady && window.PptxGenJS){
+      try{
+        const pptx = new window.PptxGenJS();
+        const cover = pptx.addSlide();
+        cover.background = { color:"5A3FA0" };
+        cover.addText(outline.title || title, { x:0.6,y:2.2,w:8.8,h:1.5, fontFace:"Georgia", fontSize:34, bold:true, color:"FFFFFF" });
+        cover.addText("Generado con Sinapsis", { x:0.6,y:3.6,w:8,h:0.5, fontSize:14, color:"E5DEF2" });
+        (outline.slides||[]).forEach(sl=>{
+          const s = pptx.addSlide();
+          s.background = { color:"FFFFFF" };
+          s.addText(sl.title||"", { x:0.5,y:0.4,w:9,h:0.8, fontSize:24, bold:true, color:"5A3FA0", fontFace:"Georgia" });
+          s.addText((sl.bullets||[]).map(b=>({text:b, options:{bullet:true, breakLine:true}})), { x:0.6,y:1.4,w:8.8,h:4.5, fontSize:16, color:"2E2540" });
+        });
+        const blob = await pptx.write({ outputType:"blob" });
+        browserSave((outline.title||title).slice(0,60)+".pptx", blob);
+        toast("Presentación .pptx descargada.");
+        return;
+      }catch(e){ /* fall through to text fallback */ }
+    }
+    const lines = [outline.title||title, ""];
+    (outline.slides||[]).forEach((sl,i)=>{ lines.push(`${i+1}. ${sl.title}`); (sl.bullets||[]).forEach(b=>lines.push("   - "+b)); lines.push(""); });
+    browserSave((outline.title||title).slice(0,60)+".md", lines.join("\n"));
+    toast("No se pudo generar el .pptx — te di el esquema en un archivo de texto para pegarlo en Slides/PowerPoint.");
+  }
+
+  /* ---------- render: shell ---------- */
+  function render(){
+    $("#streakCount").textContent = state.stats.streakDays;
+    if(state.tab==="tutor") renderTutorScreen();
+    else if(state.tab==="cards") renderCardsScreen();
+    else if(state.tab==="notes") renderNotesScreen();
+    else if(state.tab==="agenda") renderAgendaScreen();
+    else renderProgressScreen();
+    $$(".tab").forEach(b=> b.classList.toggle("active", b.dataset.tab===state.tab));
+  }
+
+  /* ---------- Tutor ---------- */
+  function renderTutorScreen(){
+    const banner = agendaBannerHtml();
+    content.innerHTML = `
+      <div class="screen" id="tutorScreen">
+        ${banner}
+        <div class="eyebrow">Tutor · ${escapeHtml(stageLabel())}</div>
+        <h2 class="section-title">Pregúntale lo que sea</h2>
+        <p class="lede">Por texto o por voz. Explica al nivel de tu etapa actual.</p>
+        <div class="chat-log" id="chatLog"></div>
+        ${state.chat.length===0 ? `<div class="chip-row" id="promptChips">${PROMPTS.map(p=>`<button class="chip" data-prompt="${escapeHtml(p)}">${escapeHtml(p)}</button>`).join("")}</div>` : ""}
+      </div>
+      <div class="composer">
+        <textarea id="chatInput" rows="1" placeholder="Escribe o dicta tu pregunta…"></textarea>
+        ${canListen ? `<button class="btn btn-icon" id="micBtn" title="Hablar">🎙️</button>` : ""}
+        <button class="btn btn-primary btn-icon" id="sendBtn">➤</button>
+      </div>
+    `;
+    renderTutorList();
+    $$("#promptChips .chip").forEach(b=> b.onclick = ()=> askTutor(b.dataset.prompt));
+    $("#sendBtn").onclick = ()=>{
+      const v = $("#chatInput").value.trim();
+      if(v) { $("#chatInput").value=""; askTutor(v); }
+    };
+    $("#chatInput").addEventListener("keydown", e=>{
+      if(e.key==="Enter" && !e.shiftKey){ e.preventDefault(); $("#sendBtn").click(); }
+    });
+    if(canListen){
+      $("#micBtn").onclick = ()=>{
+        if(state.listening) return;
+        state.listening = true; $("#micBtn").classList.add("on"); $("#micBtn").textContent = "●";
+        const rec = startDictation((text, isFinal)=>{
+          $("#chatInput").value = text;
+          if(isFinal){ state.listening = false; $("#micBtn").classList.remove("on"); $("#micBtn").textContent = "🎙️"; }
+        });
+        if(!rec){ state.listening = false; $("#micBtn").classList.remove("on"); $("#micBtn").textContent = "🎙️"; toast("No se pudo activar el micrófono."); }
+        setTimeout(()=>{ if(state.listening){ state.listening=false; $("#micBtn").classList.remove("on"); $("#micBtn").textContent="🎙️"; } }, 12000);
+      };
+    }
+  }
+
+  function renderTutorList(){
+    const log = $("#chatLog");
+    if(!log) return;
+    log.innerHTML = state.chat.map((m,i)=>{
+      const bubble = `<div class="bubble ${m.role}">${escapeHtml(m.content).replace(/\n/g,"<br>")}</div>`;
+      if(m.role==="assistant"){
+        return bubble + `<div class="msg-actions">
+          <button class="btn btn-soft btn-sm to-cards-btn" data-i="${i}">🗂️ Tarjetas</button>
+          ${canSpeak? `<button class="btn btn-soft btn-sm speak-btn" data-i="${i}">${state.speakingIdx===i? "⏹️":"🔊"}</button>`:""}
+        </div>`;
+      }
+      return bubble;
+    }).join("");
+    if(state.chatBusy){
+      log.innerHTML += `<div class="bubble assistant thinking">Pensando…</div>`;
+    }
+    $$(".to-cards-btn", log).forEach(b=>{
+      b.onclick = ()=> turnAnswerIntoCards(state.chat[+b.dataset.i].content, "Del tutor");
+    });
+    $$(".speak-btn", log).forEach(b=>{
+      b.onclick = ()=>{
+        const i = +b.dataset.i;
+        if(state.speakingIdx===i){ window.speechSynthesis.cancel(); state.speakingIdx=null; renderTutorList(); return; }
+        state.speakingIdx = i; renderTutorList();
+        speakText(state.chat[i].content, i, ()=>{ state.speakingIdx=null; renderTutorList(); });
+      };
+    });
+    log.scrollTop = log.scrollHeight;
+  }
+
+  /* ---------- Cards ---------- */
+  function renderCardsScreen(){
+    if(state.review.active) return renderReview();
+    const due = dueCards();
+    content.innerHTML = `
+      <div class="screen">
+        <div class="stat-row">
+          <div class="stat-tile"><div class="stat-num mono">${due.length}</div><div class="stat-label">Para hoy</div></div>
+          <div class="stat-tile"><div class="stat-num mono">${state.decks.length}</div><div class="stat-label">Mazos</div></div>
+          <div class="stat-tile"><div class="stat-num mono">${state.cards.length}</div><div class="stat-label">Tarjetas</div></div>
+        </div>
+        <button class="btn btn-primary" id="reviewBtn" ${due.length? "" : "disabled"}>${due.length? `Repasar ${due.length} tarjeta${due.length===1?"":"s"}` : "No hay tarjetas pendientes"}</button>
+
+        <div class="section-head"><h2 class="section-title">Tus mazos</h2></div>
+        <div style="display:flex;flex-direction:column;gap:10px" id="deckList">
+          ${state.decks.length ? state.decks.map(deckRow).join("") : `<div class="empty-note">Todavía no tienes mazos. Genera el primero abajo ↓</div>`}
+        </div>
+
+        <div class="card" style="display:flex;flex-direction:column;gap:12px">
+          <div>
+            <div class="eyebrow">Nuevo mazo · ${escapeHtml(stageLabel())}</div>
+            <h3 class="section-title" style="font-size:16px">¿Sobre qué tema quieres tarjetas?</h3>
+          </div>
+          <div class="chip-row">${PRESET_TOPICS.map(t=>`<button class="chip" data-topic="${escapeHtml(t)}">${escapeHtml(t)}</button>`).join("")}</div>
+          <input type="text" id="topicInput" placeholder="O escribe tu propio tema…" value="${escapeHtml(state.genTopic)}">
+          <button class="btn btn-eosin" id="genBtn" ${state.genBusy? "disabled":""}>${state.genBusy? "Generando 10 tarjetas…" : "✨ Generar 10 tarjetas con IA"}</button>
+        </div>
+      </div>
+    `;
+    if(due.length) $("#reviewBtn").onclick = startReview;
+    $$("[data-topic]").forEach(b=> b.onclick = ()=>{ $("#topicInput").value=b.dataset.topic; state.genTopic=b.dataset.topic; });
+    $("#topicInput").oninput = e=> state.genTopic = e.target.value;
+    $("#genBtn").onclick = ()=>{
+      const topic = $("#topicInput").value.trim();
+      if(topic) generateDeck(topic); else toast("Escribe o elige un tema primero.");
+    };
+    $$(".pptx-deck-btn").forEach(b=> b.onclick = (e)=>{
+      e.stopPropagation();
+      const deck = state.decks.find(d=>d.id===b.dataset.id);
+      if(!deck) return;
+      const cards = state.cards.filter(c=>c.deckId===deck.id);
+      const material = cards.map(c=>`P: ${c.front}\nR: ${c.back}`).join("\n\n");
+      generatePresentation(deck.name, material);
+    });
+  }
+
+  function deckRow(deck){
+    const cards = state.cards.filter(c=>c.deckId===deck.id);
+    const due = cards.filter(c=>c.dueAt<=new Date().toISOString()).length;
+    return `<div class="deck-item">
+      <div class="deck-swatch" style="background:${deck.example? 'var(--sage)':'var(--hema)'}"></div>
+      <div class="deck-info">
+        <div class="deck-name">${escapeHtml(deck.name)}${deck.example? ' <span class="mono" style="font-size:10px;color:var(--ink-faint)">EJEMPLO</span>':''}</div>
+        <div class="deck-meta">${cards.length} tarjeta${cards.length===1?"":"s"} · ${escapeHtml(deck.topic||"")}</div>
+      </div>
+      <div class="deck-actions">
+        <div class="due-pill ${due? "" : "zero"}">${due? due+" hoy" : "al día"}</div>
+        <button class="icon-link pptx-deck-btn" data-id="${deck.id}">📊 Presentación</button>
+      </div>
+    </div>`;
+  }
+
+  function startReview(){
+    state.review = { active:true, queue: dueCards(), idx:0, flipped:false };
+    render();
+  }
+
+  function renderReview(){
+    const { queue, idx } = state.review;
+    if(idx >= queue.length){
+      content.innerHTML = `<div class="screen">
+        <div class="card" style="text-align:center;display:flex;flex-direction:column;gap:10px;align-items:center;padding:32px 20px">
+          <div style="font-size:34px">✅</div>
+          <h2 class="section-title">¡Repaso completo!</h2>
+          <p class="lede">Vuelve mañana para seguir con la racha.</p>
+          <button class="btn btn-primary" id="doneBtn" style="width:auto">Volver a mazos</button>
+        </div>
+      </div>`;
+      $("#doneBtn").onclick = ()=>{ state.review.active=false; render(); };
+      return;
+    }
+    const card = queue[idx];
+    const deck = state.decks.find(d=>d.id===card.deckId);
+    content.innerHTML = `
+      <div class="screen">
+        <div class="section-head">
+          <div class="eyebrow mono">TARJETA ${idx+1}/${queue.length} · ${escapeHtml((deck&&deck.topic)||"").toUpperCase()}</div>
+        </div>
+        <div class="flip-scene">
+          <div class="flip-card" id="flipCard">
+            <div class="flip-face front">
+              <span class="specimen-tag">Pregunta</span>
+              <div class="flip-text">${escapeHtml(card.front)}</div>
+              <div class="flip-hint">Toca para voltear</div>
+            </div>
+            <div class="flip-face back">
+              <span class="specimen-tag" style="background:#fff3;color:var(--eosin)">Respuesta</span>
+              <div class="flip-text">${escapeHtml(card.back)}</div>
+            </div>
+          </div>
+        </div>
+        <div class="grade-row" id="gradeRow" style="visibility:hidden">
+          <button class="btn grade-btn g-again" data-q="2">Otra vez<small>&lt;1 d</small></button>
+          <button class="btn grade-btn g-hard" data-q="3">Difícil<small>~1 d</small></button>
+          <button class="btn grade-btn g-good" data-q="4">Bien<small>días</small></button>
+          <button class="btn grade-btn g-easy" data-q="5">Fácil<small>+días</small></button>
+        </div>
+      </div>
+    `;
+    const flip = $("#flipCard");
+    flip.onclick = ()=>{
+      state.review.flipped = !state.review.flipped;
+      flip.classList.toggle("flipped", state.review.flipped);
+      $("#gradeRow").style.visibility = state.review.flipped ? "visible":"hidden";
+    };
+    $$("[data-q]").forEach(b=> b.onclick = (e)=>{
+      e.stopPropagation();
+      recordReview(card, +b.dataset.q);
+      state.review.idx += 1; state.review.flipped = false;
+      render();
+    });
+  }
+
+  /* ---------- Notes ---------- */
+  function renderNotesScreen(){
+    content.innerHTML = `
+      <div class="screen">
+        <div class="eyebrow">Apuntes · ${escapeHtml(stageLabel())}</div>
+        <h2 class="section-title">Captura tu clase</h2>
+        <div class="mode-switch">
+          <button class="chip ${state.notesMode==='write'?'active':''}" data-mode="write">✍️ Escribir</button>
+          <button class="chip ${state.notesMode==='record'?'active':''}" data-mode="record">🎙️ Grabar clase</button>
+          <button class="chip ${state.notesMode==='photo'?'active':''}" data-mode="photo">📷 Foto</button>
+        </div>
+        <div id="modeArea"></div>
+        <div class="section-head"><h2 class="section-title">Tus apuntes</h2></div>
+        <div style="display:flex;flex-direction:column;gap:10px" id="noteList">
+          ${state.notes.length ? state.notes.map(noteItem).join("") : `<div class="empty-note">Aún no has guardado apuntes.</div>`}
+        </div>
+      </div>
+    `;
+    $$(".mode-switch .chip").forEach(b=> b.onclick = ()=>{ state.notesMode = b.dataset.mode; renderModeArea(); $$(".mode-switch .chip").forEach(c=>c.classList.toggle("active", c===b)); });
+    renderModeArea();
+    $$(".note-head").forEach(h=> h.onclick = ()=>{
+      const body = h.nextElementSibling;
+      body.style.display = body.style.display==="none" ? "flex" : "none";
+    });
+    $$(".mk-cards-note").forEach(b=> b.onclick = (e)=>{ e.stopPropagation(); const note = state.notes.find(n=>n.id===b.dataset.id); if(note) cardsFromNote(note); });
+    $$(".mk-pptx-note").forEach(b=> b.onclick = (e)=>{ e.stopPropagation(); const note = state.notes.find(n=>n.id===b.dataset.id); if(note) generatePresentation(note.title, note.summary + "\n" + (note.terms||[]).map(t=>t.term+": "+t.definition).join("\n")); });
+  }
+
+  function renderModeArea(){
+    const area = $("#modeArea");
+    if(!area) return;
+    if(state.notesMode==="write"){
+      area.innerHTML = `
+        <div class="card" style="display:flex;flex-direction:column;gap:10px">
+          <div class="field"><label>Título</label><input type="text" id="noteTitle" placeholder="Ej. Clase 4 — Membrana celular" value="${escapeHtml(state.notesDraftTitle)}"></div>
+          <div class="field"><label>Apuntes</label><textarea id="noteText" rows="5" placeholder="Pega o escribe aquí tus apuntes de clase…">${escapeHtml(state.notesDraftText)}</textarea></div>
+          <button class="btn btn-eosin" id="summarizeBtn" ${state.notesBusy? "disabled":""}>${state.notesBusy? "Resumiendo…" : "✨ Resumir con IA"}</button>
+        </div>`;
+      $("#noteTitle").oninput = e=> state.notesDraftTitle = e.target.value;
+      $("#noteText").oninput = e=> state.notesDraftText = e.target.value;
+      $("#summarizeBtn").onclick = ()=>{
+        const text = $("#noteText").value.trim();
+        if(!text){ toast("Escribe o pega algo de texto primero."); return; }
+        summarizeNote($("#noteTitle").value.trim(), text);
+      };
+    } else if(state.notesMode==="record"){
+      area.innerHTML = `
+        <div class="card rec-panel">
+          <button class="rec-circle ${state.rec.active?'active':''}" id="recBtn">${state.rec.active? "⏹️" : "🎙️"}</button>
+          <div class="rec-timer mono" id="recTimer">${fmtTime(state.rec.seconds)}</div>
+          <div class="rec-status">${state.rec.active? "Grabando…" : (state.rec.transcript||state.rec.audioBlob ? "Listo" : "Toca para empezar a grabar la clase")}</div>
+          ${!canListen ? `<div class="lede" style="text-align:center">Este navegador no transcribe en vivo, pero puedes grabar el audio.</div>` : ""}
+          <textarea id="transcriptBox" class="transcript-box" placeholder="Aquí aparecerá la transcripción en vivo…">${escapeHtml(state.rec.transcript)}</textarea>
+          <div class="note-btn-row" style="width:100%">
+            ${state.rec.audioBlob ? `<button class="btn btn-soft btn-sm" id="saveAudioBtn">💾 Descargar audio</button>` : ""}
+            ${state.rec.transcript.trim() ? `<button class="btn btn-eosin btn-sm" id="sumClassBtn">✨ Resumir con IA</button>` : ""}
+          </div>
+        </div>`;
+      $("#recBtn").onclick = ()=> state.rec.active ? stopRecording() : startRecording();
+      $("#transcriptBox").oninput = e=> state.rec.transcript = e.target.value;
+      $("#saveAudioBtn") && ($("#saveAudioBtn").onclick = saveRecordingAudio);
+      $("#sumClassBtn") && ($("#sumClassBtn").onclick = ()=> summarizeNote("", state.rec.transcript, "Clase — "+new Date().toLocaleDateString()));
+    } else {
+      const p = state.photo;
+      area.innerHTML = `
+        <div class="card" style="display:flex;flex-direction:column;gap:12px">
+          ${p.previewUrl ? `<img class="photo-preview" src="${p.previewUrl}">` : `
+            <label class="photo-drop" for="photoInput">
+              <span style="font-size:28px">📷</span>
+              <span class="lede">Toca para tomar o subir una foto (diapositiva, pizarrón, página)</span>
+            </label>`}
+          <input type="file" id="photoInput" accept="image/*" capture="environment" style="display:none">
+          ${p.previewUrl ? `
+            <div class="chip-row">
+              <button class="chip" data-q="Transcribe el texto de esta imagen.">Transcribir texto</button>
+              <button class="chip" data-q="Explica este diagrama con detalle, a mi nivel.">Explicar diagrama</button>
+              <button class="chip" data-q="Hazme 3 preguntas de repaso sobre esto.">Preguntas de repaso</button>
+            </div>
+            <textarea id="photoQ" rows="2" placeholder="¿Qué quieres preguntar sobre la imagen?">${escapeHtml(p.question)}</textarea>
+            <button class="btn btn-eosin" id="askPhotoBtn" ${p.asking?"disabled":""}>${p.asking? "Consultando…" : "✨ Preguntar a la IA"}</button>
+            ${p.answer ? `<div class="answer-box">${escapeHtml(p.answer)}</div><button class="btn btn-soft btn-sm" id="saveNoteFromPhoto">📝 Guardar como apunte</button>` : ""}
+            <button class="btn btn-ghost btn-sm" id="retakeBtn">Elegir otra foto</button>
+          `: ""}
+        </div>`;
+      $("#photoInput").onchange = (e)=>{
+        const f = e.target.files[0]; if(!f) return;
+        state.photo.file = f; state.photo.previewUrl = URL.createObjectURL(f); state.photo.answer="";
+        renderModeArea();
+      };
+      $$("[data-q]").forEach(b=> b.onclick = ()=>{ state.photo.question = b.dataset.q; $("#photoQ").value = b.dataset.q; });
+      $("#photoQ") && ($("#photoQ").oninput = e=> state.photo.question = e.target.value);
+      $("#askPhotoBtn") && ($("#askPhotoBtn").onclick = askAboutPhoto);
+      $("#saveNoteFromPhoto") && ($("#saveNoteFromPhoto").onclick = saveAnswerAsNote);
+      $("#retakeBtn") && ($("#retakeBtn").onclick = ()=>{ state.photo = { file:null, previewUrl:null, question:"", answer:"", asking:false }; renderModeArea(); });
+    }
+  }
+
+  function noteItem(note){
+    const d = new Date(note.createdAt);
+    return `<div class="note-item">
+      <div class="note-head">
+        <div><div class="note-title">${escapeHtml(note.title)}</div><div class="note-date mono">${d.toLocaleDateString()}</div></div>
+        <span>▾</span>
+      </div>
+      <div class="note-body" style="display:none">
+        <p class="lede">${escapeHtml(note.summary)}</p>
+        <div class="chip-row">${(note.terms||[]).map(t=>`<div class="term-chip"><b>${escapeHtml(t.term)}</b>${escapeHtml(t.definition)}</div>`).join("")}</div>
+        <div class="note-btn-row">
+          <button class="btn btn-soft btn-sm mk-cards-note" data-id="${note.id}">🗂️ Tarjetas</button>
+          <button class="btn btn-soft btn-sm mk-pptx-note" data-id="${note.id}">📊 Presentación</button>
+        </div>
+      </div>
+    </div>`;
+  }
+
+  /* ---------- Agenda ---------- */
+  function renderAgendaScreen(){
+    content.innerHTML = `
+      <div class="screen">
+        <div class="eyebrow">Agenda</div>
+        <h2 class="section-title">Horario y recordatorios</h2>
+        ${agendaBannerHtml() || `<p class="lede">Nada urgente por ahora — agrega tu horario y tus próximos parciales o entregas abajo.</p>`}
+
+        <div class="section-head"><h2 class="section-title" style="font-size:16px">Recordatorios</h2></div>
+        <div style="display:flex;flex-direction:column;gap:8px" id="remList">
+          ${remindersSorted().length ? remindersSorted().map(reminderItem).join("") : `<div class="empty-note">Sin parciales, entregas o trabajos guardados.</div>`}
+        </div>
+        <div class="card" style="display:flex;flex-direction:column;gap:10px">
+          <div class="eyebrow">Nuevo recordatorio</div>
+          <div class="field-row">
+            <div class="field"><label>Tipo</label><select id="remType">${REM_TYPES.map(t=>`<option ${state.remForm.type===t?"selected":""}>${t}</option>`).join("")}</select></div>
+            <div class="field"><label>Fecha</label><input type="date" id="remDate" value="${state.remForm.date}"></div>
+          </div>
+          <div class="field"><label>Título</label><input type="text" id="remTitle" placeholder="Ej. Parcial de Bioquímica — corte 1" value="${escapeHtml(state.remForm.title)}"></div>
+          <div class="field"><label>Materia (opcional)</label><input type="text" id="remSubject" placeholder="Ej. Bioquímica" value="${escapeHtml(state.remForm.subject)}"></div>
+          <button class="btn btn-eosin" id="addRemBtn">Agregar recordatorio</button>
+        </div>
+
+        <div class="section-head"><h2 class="section-title" style="font-size:16px">Horario semanal</h2></div>
+        <div style="display:flex;flex-direction:column;gap:14px" id="schedList">
+          ${DAYS.map(day=>{
+            const items = state.schedule.filter(s=>s.day===day).sort((a,b)=>a.time.localeCompare(b.time));
+            if(!items.length) return "";
+            return `<div class="day-group"><div class="day-label">${day}</div>${items.map(schedItem).join("")}</div>`;
+          }).join("") || `<div class="empty-note">Aún no has cargado tu horario.</div>`}
+        </div>
+        <div class="card" style="display:flex;flex-direction:column;gap:10px">
+          <div class="eyebrow">Nueva clase</div>
+          <div class="field-row">
+            <div class="field"><label>Día</label><select id="schedDay">${DAYS.map(d=>`<option ${state.schedForm.day===d?"selected":""}>${d}</option>`).join("")}</select></div>
+            <div class="field"><label>Hora</label><input type="time" id="schedTime" value="${state.schedForm.time}"></div>
+          </div>
+          <div class="field"><label>Materia</label><input type="text" id="schedSubject" placeholder="Ej. Anatomía" value="${escapeHtml(state.schedForm.subject)}"></div>
+          <div class="field"><label>Lugar (opcional)</label><input type="text" id="schedPlace" placeholder="Ej. Aula 302" value="${escapeHtml(state.schedForm.place)}"></div>
+          <button class="btn btn-eosin" id="addSchedBtn">Agregar a horario</button>
+        </div>
+      </div>
+    `;
+    $("#addRemBtn").onclick = ()=>{
+      const title = $("#remTitle").value.trim(), date = $("#remDate").value;
+      if(!title || !date){ toast("Falta el título o la fecha."); return; }
+      const entry = { id:"r"+Math.random().toString(36).slice(2,10), title, date, type:$("#remType").value, subject:$("#remSubject").value.trim() };
+      state.reminders.push(entry); saveReminders();
+      state.remForm = { title:"", type:"Parcial", date:"", subject:"" };
+      render();
+    };
+    $("#addSchedBtn").onclick = ()=>{
+      const time = $("#schedTime").value, subject = $("#schedSubject").value.trim();
+      if(!time || !subject){ toast("Falta la hora o la materia."); return; }
+      const entry = { id:"s"+Math.random().toString(36).slice(2,10), day:$("#schedDay").value, time, subject, place:$("#schedPlace").value.trim() };
+      state.schedule.push(entry); saveSchedule();
+      state.schedForm = { day:$("#schedDay").value, time:"", subject:"", place:"" };
+      render();
+    };
+    $$(".del-rem").forEach(b=> b.onclick = ()=>{ state.reminders = state.reminders.filter(r=>r.id!==b.dataset.id); saveReminders(); render(); });
+    $$(".del-sched").forEach(b=> b.onclick = ()=>{ state.schedule = state.schedule.filter(s=>s.id!==b.dataset.id); saveSchedule(); render(); });
+  }
+
+  function reminderItem(r){
+    const d = daysUntil(r.date);
+    const cls = d < 0 ? "over" : d<=1 ? "" : "zero";
+    const when = d < 0 ? `hace ${-d} d` : d===0 ? "¡hoy!" : d===1 ? "mañana" : `en ${d} d`;
+    return `<div class="reminder-item">
+      <div style="flex:1;min-width:0">
+        <div class="type-chip">${escapeHtml(r.type)}</div>
+        <div class="sched-subject">${escapeHtml(r.title)}</div>
+        ${r.subject? `<div class="sched-place">${escapeHtml(r.subject)}</div>`:""}
+      </div>
+      <div class="due-pill ${cls}">${when}</div>
+      <button class="icon-link del-rem" data-id="${r.id}">✕</button>
+    </div>`;
+  }
+  function schedItem(s){
+    return `<div class="sched-item">
+      <div class="sched-time mono">${s.time}</div>
+      <div class="sched-info"><div class="sched-subject">${escapeHtml(s.subject)}</div>${s.place?`<div class="sched-place">${escapeHtml(s.place)}</div>`:""}</div>
+      <button class="icon-link del-sched" data-id="${s.id}">✕</button>
+    </div>`;
+  }
+
+  /* ---------- Progress ---------- */
+  function renderProgressScreen(){
+    const total = state.stats.totalReviews||0, correct = state.stats.correctReviews||0;
+    const acc = total? Math.round(correct/total*100) : 0;
+    const mastered = state.cards.filter(c=>c.interval>=21).length;
+    const days = [...Array(7)].map((_,i)=>{
+      const d = new Date(Date.now()-(6-i)*86400000);
+      const key = d.toISOString().slice(0,10);
+      return { key, label: d.toLocaleDateString(undefined,{weekday:"narrow"}), count: state.stats.daily[key]||0 };
+    });
+    const maxCount = Math.max(1, ...days.map(d=>d.count));
+    content.innerHTML = `
+      <div class="screen">
+        <div class="eyebrow">Progreso</div>
+        <h2 class="section-title">Cómo vas</h2>
+
+        <div class="card" style="display:flex;flex-direction:column;gap:8px">
+          <label>Tu etapa actual</label>
+          <div style="display:flex;gap:8px">
+            <input type="text" id="stageInput" placeholder="Ej. 3er semestre, Rotación de Pediatría…" value="${escapeHtml(state.stageDraft)}">
+            <button class="btn btn-soft btn-sm" id="saveStageBtn">Guardar</button>
+          </div>
+          <p class="lede">Esto ajusta el nivel del tutor, las tarjetas y los resúmenes. Actualízalo cuando avances.</p>
+          <details class="adv">
+            <summary>Clave de IA (avanzado)</summary>
+            <div class="field" style="margin-top:6px">
+              <input type="password" id="apiKeyInput" placeholder="Solo si el tutor deja de funcionar (sk-ant-...)" value="${escapeHtml(state.apiKeyDraft)}">
+            </div>
+            <button class="btn btn-soft btn-sm" id="saveKeyBtn" style="margin-top:8px">Guardar clave</button>
+          </details>
+        </div>
+
+        <div class="stat-row">
+          <div class="stat-tile"><div class="stat-num mono">${state.stats.streakDays}</div><div class="stat-label">Racha (días)</div></div>
+          <div class="stat-tile"><div class="stat-num mono">${acc}%</div><div class="stat-label">Aciertos</div></div>
+          <div class="stat-tile"><div class="stat-num mono">${mastered}</div><div class="stat-label">Dominadas</div></div>
+        </div>
+        <div class="card">
+          <div class="eyebrow" style="margin-bottom:10px">Últimos 7 días</div>
+          <div class="bars">${days.map(d=>`<div class="bar-col"><div class="bar ${d.count?'active':''}" style="height:${Math.max(6,d.count/maxCount*90)}px"></div><div class="bar-label mono">${d.label}</div></div>`).join("")}</div>
+        </div>
+        <div class="section-head"><h2 class="section-title">Por mazo</h2></div>
+        <div style="display:flex;flex-direction:column;gap:10px">
+          ${state.decks.length ? state.decks.map(deckRow).join("") : `<div class="empty-note">Crea tu primer mazo en la pestaña Tarjetas.</div>`}
+        </div>
+      </div>
+    `;
+    $("#stageInput").oninput = e=> state.stageDraft = e.target.value;
+    $("#saveStageBtn").onclick = ()=>{
+      state.profile.stage = state.stageDraft.trim() || "Primer semestre";
+      saveProfile();
+      toast("Etapa actualizada.");
+      render();
+    };
+    $("#apiKeyInput").oninput = e=> state.apiKeyDraft = e.target.value;
+    $("#saveKeyBtn").onclick = ()=>{
+      const v = state.apiKeyDraft.trim();
+      if(v){ localStorage.setItem("sinapsis.apiKeyOverride", v); toast("Clave guardada en este dispositivo."); }
+      else { localStorage.removeItem("sinapsis.apiKeyOverride"); toast("Se restauró la clave predeterminada."); }
+    };
+    $$(".pptx-deck-btn").forEach(b=> b.onclick = (e)=>{
+      e.stopPropagation();
+      const deck = state.decks.find(d=>d.id===b.dataset.id);
+      if(!deck) return;
+      const cards = state.cards.filter(c=>c.deckId===deck.id);
+      const material = cards.map(c=>`P: ${c.front}\nR: ${c.back}`).join("\n\n");
+      generatePresentation(deck.name, material);
+    });
+  }
+
+  /* ---------- tabs & boot ---------- */
+  $$(".tab").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      state.tab = btn.dataset.tab;
+      state.review.active = false;
+      render();
+    });
+  });
+
+  if("serviceWorker" in navigator){
+    window.addEventListener("load", ()=>{ navigator.serviceWorker.register("sw.js").catch(()=>{}); });
+  }
+
+  loadAll();
+  render();
+})();
+</script>
+</body>
+</html>
