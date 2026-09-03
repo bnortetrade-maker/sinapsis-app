@@ -6,7 +6,21 @@ const ASSETS = ["./", "./index.html", "./manifest.json", "./icon-192.png", "./ic
 const NETWORK_FIRST = ["./", "./index.html", "./manifest.json"];
 
 self.addEventListener("install", (e) => {
-  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(ASSETS)));
+  // cache.addAll() fails ALL of install if a single asset 404s or is missing
+  // (e.g. a filename-case mismatch after a manual upload — GitHub Pages is
+  // case-sensitive). A failed install means the service worker never
+  // activates, and without an active service worker Chrome/Android will not
+  // offer "Instalar app" at all — so cache each asset independently instead,
+  // and let install succeed even if one file couldn't be pre-cached.
+  e.waitUntil(
+    caches.open(CACHE).then((c) =>
+      Promise.all(
+        ASSETS.map((url) =>
+          c.add(url).catch((err) => { try { console.error("SW precache failed for", url, err); } catch (e2) {} })
+        )
+      )
+    )
+  );
   self.skipWaiting();
 });
 

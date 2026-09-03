@@ -300,6 +300,18 @@
 </div>
 
 <script>
+// Registro del service worker MUY temprano, fuera de la app principal y antes
+// de cualquier otro código. Si algo dentro de la app de abajo llegara a fallar
+// al arrancar, esto no debe verse afectado: sin un service worker activo, Chrome
+// nunca ofrece "Instalar app" / "Agregar a pantalla de inicio", y el enlace de
+// instalación se queda sin reaccionar — indistinguible, para quien lo usa, de
+// que "no pasa nada" al tocarlo.
+if("serviceWorker" in navigator){
+  window.addEventListener("load", ()=>{
+    navigator.serviceWorker.register("sw.js").catch(err=>{ try{ console.error("SW register failed", err); }catch(e){} });
+  });
+}
+
 (function(){
   "use strict";
 
@@ -312,7 +324,13 @@
 
   function activeApiKey(){ return (localStorage.getItem("sinapsis.apiKeyOverride") || "").trim() || EMBEDDED_API_KEY; }
 
-  async function callClaude(messages, { system, model, maxTokens } = {}){
+  // Herramienta de búsqueda en internet de la propia API de Claude — se usa
+  // solo para presentaciones/PDF/Word (donde más importa que los datos estén
+  // actualizados), nunca en el Tutor ni en las tarjetas, para no encarecer ni
+  // ralentizar el uso diario.
+  const WEB_SEARCH_TOOL = { type: "web_search_20250305", name: "web_search", max_uses: 4 };
+
+  async function callClaude(messages, { system, model, maxTokens, tools } = {}){
     const key = activeApiKey();
     if(!key) throw { code: "no_key" };
     let resp;
@@ -330,6 +348,7 @@
           max_tokens: maxTokens || 1024,
           system: system || undefined,
           messages,
+          tools: tools || undefined,
         }),
       });
     }catch(e){ throw { code: "network" }; }
@@ -531,11 +550,15 @@
     chat: [], chatBusy:false, listening:false, speakingIdx:null,
     decks: [], cards: [], notes: [],
     schedule: [], reminders: [],
-    profile: { stage: "Primer semestre", name:"" }, stageDraft:"", nameDraft:"",
+    profile: { stage: "Primer semestre", name:"", autoSpeak:true }, stageDraft:"", nameDraft:"",
     stats: { streakDays:0, lastStudyDate:null, totalReviews:0, correctReviews:0, daily:{} },
     review: { active:false, queue:[], idx:0, flipped:false },
     genTopic:"", genBusy:false,
     notesMode:"write", notesBusy:false, notesDraftTitle:"", notesDraftText:"",
+    // "live" = solo transcripción por voz (SpeechRecognition), "audio" = solo grabar el audio (MediaRecorder).
+    // Nunca se usan las dos APIs de micrófono al mismo tiempo: en Android, el sistema operativo le
+    // corta el micrófono a una de las dos sin avisar, y eso es lo que dejaba la transcripción en blanco.
+    recMode: "live",
     rec: { active:false, seconds:0, transcript:"", chunks:[], mediaRecorder:null, recog:null, timerId:null, audioBlob:null },
     photo: { file:null, previewUrl:null, question:"", answer:"", asking:false },
     schedForm: { day:"Lunes", time:"", subject:"", place:"" },
@@ -570,6 +593,14 @@
     t.className = "toast"; t.textContent = msg;
     document.body.appendChild(t);
     setTimeout(()=>t.remove(), 2600);
+  }
+
+  // Muestra el mensaje como toast y, si la voz automática está activada, también
+  // lo lee en voz alta — para que el asistente de inicio y el tutor se sientan
+  // como una conversación real, no solo texto.
+  function announce(msg){
+    toast(msg);
+    if(canSpeak && state.profile.autoSpeak !== false){ window.speechSynthesis.cancel(); speakText(msg, null, ()=>{}); }
   }
 
   function errorCopy(e){
@@ -751,9 +782,22 @@ Responde SOLO con un array JSON de 10 objetos: [{"front":"...","back":"..."}, ..
       const deck = { id:deckId, name:topic, topic, createdAt: Date.now() };
       const cards = arr.slice(0,12).map(c=> mkCard(deckId, String(c.front||"").trim(), String(c.back||"").trim(), true));
       saveDeckAndCards(deck, cards);
-      toast(`Mazo "${topic}" creado con ${cards.length} tarjetas.`);
+      announce(`Flashcards de "${topic}" creadas: ${cards.length} tarjetas.`);
     }catch(e){ toast(errorCopy(e)); }
     finally{ state.genBusy = false; state.genTopic=""; render(); }
+  }
+
+  // Lee en voz alta la última respuesta del tutor, si la voz automática está
+  // activada — así el módulo de voz contesta hablando, no solo con texto.
+  function autoSpeakLast(){
+    if(!canSpeak || state.profile.autoSpeak === false) return;
+    const idx = state.chat.length - 1;
+    const msg = state.chat[idx];
+    if(!msg || msg.role !== "assistant") return;
+    window.speechSynthesis.cancel();
+    state.speakingIdx = idx;
+    renderTutorList();
+    speakText(msg.content.replace(/^⚠️\s*/, ""), idx, ()=>{ state.speakingIdx=null; renderTutorList(); });
   }
 
   async function askTutor(text){
@@ -767,7 +811,7 @@ Responde SOLO con un array JSON de 10 objetos: [{"front":"...","back":"..."}, ..
     }catch(e){
       state.chat.push({ role:"assistant", content: "⚠️ " + errorCopy(e) });
     }
-    finally{ state.chatBusy = false; render(); }
+    finally{ state.chatBusy = false; render(); autoSpeakLast(); }
   }
 
   async function turnAnswerIntoCards(answerText, topicHint){
@@ -781,7 +825,7 @@ Texto:\n"""${answerText.slice(0,3000)}"""\nResponde SOLO con un array JSON: [{"f
       const deck = { id:deckId, name: topicHint || "Del tutor", topic: topicHint || "Tutor", createdAt: Date.now() };
       const cards = arr.slice(0,5).map(c=>mkCard(deckId, String(c.front||"").trim(), String(c.back||"").trim(), true));
       saveDeckAndCards(deck, cards);
-      toast(`Tarjetas añadidas al mazo "${deck.name}".`);
+      toast(`Tarjetas añadidas a "${deck.name}".`);
       if(state.tab==="cards") render();
     }catch(e){ toast(errorCopy(e)); }
   }
@@ -818,7 +862,7 @@ Responde SOLO con un array JSON: [{"front":"...","back":"..."}, ...]`;
       const deck = { id:deckId, name: note.title, topic:"Apuntes", createdAt: Date.now() };
       const cards = arr.slice(0,6).map(c=>mkCard(deckId, String(c.front||"").trim(), String(c.back||"").trim(), true));
       saveDeckAndCards(deck, cards);
-      toast(`Mazo "${note.title}" creado desde tus apuntes.`);
+      toast(`Flashcards de "${note.title}" creadas desde tus apuntes.`);
     }catch(e){ toast(errorCopy(e)); }
   }
 
@@ -858,13 +902,23 @@ Responde SOLO con un array JSON: [{"front":"...","back":"..."}, ...]`;
   }
 
   function startRecording(){
-    state.rec = { active:true, seconds:0, transcript:"", chunks:[], mediaRecorder:null, recog:null, timerId:null, audioBlob:null, recogErrors:0, recogDenied:false };
+    // Modo efectivo para esta grabación: si el navegador no soporta dictado
+    // (p.ej. algunos navegadores de escritorio, o el modo "en vivo" no aplica),
+    // se fuerza a solo-audio. Nunca se combinan las dos APIs de micrófono: en
+    // Android, el sistema le quita el micrófono a una de las dos sin avisar
+    // (ni error ni evento), y eso es lo que dejaba el cuadro de transcripción
+    // vacío al grabar una clase. Cada modo usa el micrófono en exclusiva.
+    const mode = canListen ? state.recMode : "audio";
+    state.rec = { active:true, mode, seconds:0, transcript:"", chunks:[], mediaRecorder:null, recog:null, timerId:null, audioBlob:null, recogErrors:0, recogDenied:false };
     render();
     state.rec.timerId = setInterval(()=>{ state.rec.seconds++; const el=$("#recTimer"); if(el) el.textContent = fmtTime(state.rec.seconds); }, 1000);
 
-    if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.MediaRecorder){
-      toast("Este navegador no permite grabar audio. Puedes usar la transcripción en vivo si está disponible.");
-    } else {
+    if(mode === "audio"){
+      if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.MediaRecorder){
+        toast("Este navegador no permite grabar audio.");
+        stopRecording();
+        return;
+      }
       navigator.mediaDevices.getUserMedia({ audio:true }).then(stream=>{
         // The recording could have been cancelled while the permission prompt was open.
         if(!state.rec.active){ stream.getTracks().forEach(t=>t.stop()); return; }
@@ -882,53 +936,63 @@ Responde SOLO con un array JSON: [{"front":"...","back":"..."}, ...]`;
         toast("No se pudo acceder al micrófono. Revisa el permiso de micrófono para este sitio.");
         if(!state.rec.mediaRecorder) stopRecording();
       });
+      return;
     }
 
-    if(canListen){
-      const runRecognition = ()=>{
-        if(!state.rec.active || state.rec.recogDenied) return;
-        // After repeated failures, stop retrying live transcription instead of
-        // spinning forever — the audio recording above keeps working regardless.
-        if(state.rec.recogErrors >= 4){
-          const status = $(".rec-status"); if(status) status.textContent = "Grabando audio (sin transcripción en vivo).";
-          return;
+    // mode === "live": solo dictado por voz, sin getUserMedia/MediaRecorder.
+    const runRecognition = ()=>{
+      if(!state.rec.active || state.rec.recogDenied) return;
+      // After repeated failures, stop retrying live transcription instead of
+      // spinning forever.
+      if(state.rec.recogErrors >= 4){
+        const status = $(".rec-status"); if(status) status.textContent = "No se pudo transcribir. Puedes intentar de nuevo o grabar solo el audio.";
+        toast("La transcripción en vivo falló varias veces seguidas. Prueba con \"Solo grabar audio\".");
+        stopRecording();
+        return;
+      }
+      const rec = new SpeechRec();
+      rec.lang = (navigator.language||"es-ES").startsWith("es") ? navigator.language : "es-ES";
+      // continuous:true está roto en Chrome para Android (se corta a los pocos segundos
+      // sin avisar). En su lugar se encadenan sesiones cortas no continuas: cada una
+      // termina sola al detectar una pausa y runRecognition() arranca la siguiente.
+      rec.continuous = false; rec.interimResults = true;
+      let sessionFinal = "", gotResult = false;
+      rec.onresult = (e)=>{
+        gotResult = true; state.rec.recogErrors = 0;
+        let interim = "";
+        for(let i=e.resultIndex;i<e.results.length;i++){
+          const t = e.results[i][0].transcript;
+          if(e.results[i].isFinal) sessionFinal += t + " "; else interim += t;
         }
-        const rec = new SpeechRec();
-        rec.lang = (navigator.language||"es-ES").startsWith("es") ? navigator.language : "es-ES";
-        rec.continuous = true; rec.interimResults = true;
-        let sessionFinal = "", gotResult = false;
-        rec.onresult = (e)=>{
-          gotResult = true; state.rec.recogErrors = 0;
-          let interim = "";
-          for(let i=e.resultIndex;i<e.results.length;i++){
-            const t = e.results[i][0].transcript;
-            if(e.results[i].isFinal) sessionFinal += t + " "; else interim += t;
-          }
-          const box = $("#transcriptBox");
-          if(box) box.value = (state.rec.transcript + " " + sessionFinal + " " + interim).trim();
-        };
-        rec.onend = ()=>{
-          state.rec.transcript = (state.rec.transcript + " " + sessionFinal).trim();
-          if(!gotResult) state.rec.recogErrors += 1;
-          if(state.rec.active && !state.rec.recogDenied){
-            // Small delay instead of restarting instantly — an immediate, unthrottled
-            // restart loop on repeated errors is what pegged the CPU and froze the tab.
-            setTimeout(runRecognition, 500);
-          }
-        };
-        rec.onerror = (e)=>{
-          if(e && (e.error==="not-allowed" || e.error==="service-not-allowed")){
-            state.rec.recogDenied = true;
-            toast("Permiso de micrófono denegado para la transcripción en vivo.");
-          } else {
-            state.rec.recogErrors += 1;
-          }
-        };
-        try{ rec.start(); state.rec.recog = rec; }
-        catch(e){ state.rec.recogErrors += 1; if(state.rec.active) setTimeout(runRecognition, 500); }
+        const box = $("#transcriptBox");
+        if(box) box.value = (state.rec.transcript + " " + sessionFinal + " " + interim).trim();
       };
-      runRecognition();
-    }
+      rec.onend = ()=>{
+        state.rec.transcript = (state.rec.transcript + " " + sessionFinal).trim();
+        if(!gotResult) state.rec.recogErrors += 1;
+        if(state.rec.active && !state.rec.recogDenied){
+          // Small delay instead of restarting instantly — an immediate, unthrottled
+          // restart loop on repeated errors is what pegged the CPU and froze the tab.
+          // When the previous session actually captured speech, restart sooner so
+          // chaining short sessions doesn't drop words between them.
+          setTimeout(runRecognition, gotResult ? 150 : 500);
+        }
+      };
+      rec.onerror = (e)=>{
+        if(e && (e.error==="not-allowed" || e.error==="service-not-allowed")){
+          state.rec.recogDenied = true;
+          toast("Permiso de micrófono denegado para la transcripción en vivo.");
+          stopRecording();
+        } else if(e && e.error === "no-speech"){
+          // Normal in non-continuous mode during silence — not a real error, don't count it.
+        } else {
+          state.rec.recogErrors += 1;
+        }
+      };
+      try{ rec.start(); state.rec.recog = rec; }
+      catch(e){ state.rec.recogErrors += 1; if(state.rec.active) setTimeout(runRecognition, 500); }
+    };
+    runRecognition();
   }
 
   function stopRecording(){
@@ -973,20 +1037,47 @@ Responde SOLO con un array JSON: [{"front":"...","back":"..."}, ...]`;
   const ensureDocxLib = ()=> lazyScript("docx", "https://cdn.jsdelivr.net/npm/docx@9.7.1/dist/index.iife.js", ()=>window.docx);
 
   async function getStudyOutline(title, materialText){
-    const prompt = `Convierte este material de estudio de medicina en un esquema de documento (título general y 5-8 secciones).
+    const prompt = `Eres profesor de medicina redactando un documento de estudio completo y serio para una estudiante, a partir de este material (título y 5-8 secciones). El contenido debe ser real, preciso y con información concreta — nunca frases vacías ni relleno genérico.
+Antes de escribir, busca en internet fuentes médicas confiables y actuales (guías clínicas, revisiones, libros de texto reconocidos) para verificar u obtener datos, cifras, nombres y clasificaciones exactas — no te bases solo en lo que ya sabes de memoria.
 Material ("""${title}"""): """${materialText.slice(0,3500)}"""
-Responde SOLO con JSON: {"title":"...", "slides":[{"title":"...","bullets":["...", "..."]}]} (2-4 puntos breves por sección, en español).`;
-    return callClaudeJSON(prompt, { maxTokens:1800 });
+Para CADA sección incluye:
+- "explanation": un párrafo real y completo (4-7 frases) que explique el concepto con datos concretos (mecanismos, cifras, nombres, ejemplos), como en un apunte de estudio serio — no una frase genérica.
+- "bullets": 3-5 puntos clave concretos que resuman lo más importante para repasar.
+- "table": SOLO si la sección compara, clasifica o contrasta cosas (ej. tipos de tejido, diferencias entre enfermedades, clasificaciones) — objeto {"headers":["...","..."] (2-4 columnas cortas), "rows":[["...","..."], ...] (3-6 filas con datos reales, nunca "dato 1")}. Si no aplica, usa null.
+- "flow": SOLO si la sección describe un proceso, mecanismo o secuencia (ej. un ciclo metabólico, una cascada fisiológica, un algoritmo clínico) — arreglo de 3-6 pasos concretos en orden, cada uno de 2-6 palabras. Si no aplica, usa null.
+Usa table y/o flow únicamente en las secciones donde de verdad aporten claridad (no las fuerces en todas).
+Responde SOLO con JSON, en español, sin texto adicional:
+{"title":"...", "slides":[{"title":"...", "explanation":"...", "bullets":["...","..."], "table":{"headers":[...],"rows":[[...],...]}|null, "flow":["...","..."]|null}]}`;
+    try{
+      return await callClaudeJSON(prompt, { maxTokens:5000, tools:[WEB_SEARCH_TOOL] });
+    }catch(e){
+      // Si esta clave/cuenta no tiene habilitada la búsqueda en internet, se
+      // reintenta sin ella en vez de dejar el documento sin generar.
+      if(e && (e.code==="invalid_request_error" || e.code==="permission_error")){
+        return callClaudeJSON(prompt, { maxTokens:5000 });
+      }
+      throw e;
+    }
   }
 
   function outlineAsText(outline, title){
     const lines = [outline.title||title, ""];
-    (outline.slides||[]).forEach((sl,i)=>{ lines.push(`${i+1}. ${sl.title}`); (sl.bullets||[]).forEach(b=>lines.push("   - "+b)); lines.push(""); });
+    (outline.slides||[]).forEach((sl,i)=>{
+      lines.push(`${i+1}. ${sl.title}`);
+      if(sl.explanation) lines.push("   " + sl.explanation);
+      (sl.bullets||[]).forEach(b=>lines.push("   - "+b));
+      if(sl.table && sl.table.headers && sl.table.rows){
+        lines.push("   " + sl.table.headers.join(" | "));
+        sl.table.rows.forEach(row=> lines.push("   " + row.join(" | ")));
+      }
+      if(Array.isArray(sl.flow) && sl.flow.length) lines.push("   " + sl.flow.join("  →  "));
+      lines.push("");
+    });
     return lines.join("\n");
   }
 
   async function exportAs(fmt, title, materialText){
-    toast("Generando documento…");
+    toast("Generando documento… (busca en internet para verificar los datos, puede tardar un poco más)");
     let outline;
     try{ outline = await getStudyOutline(title, materialText); }
     catch(e){ toast(errorCopy(e)); return; }
@@ -1007,8 +1098,41 @@ Responde SOLO con JSON: {"title":"...", "slides":[{"title":"...","bullets":["...
         (outline.slides||[]).forEach(sl=>{
           const s = pptx.addSlide();
           s.background = { color:"FFFFFF" };
-          s.addText(sl.title||"", { x:0.5,y:0.4,w:9,h:0.8, fontSize:24, bold:true, color:"5A3FA0", fontFace:"Georgia" });
-          s.addText((sl.bullets||[]).map(b=>({text:b, options:{bullet:true, breakLine:true}})), { x:0.6,y:1.4,w:8.8,h:4.5, fontSize:16, color:"2E2540" });
+          s.addText(sl.title||"", { x:0.5,y:0.35,w:9,h:0.7, fontSize:22, bold:true, color:"5A3FA0", fontFace:"Georgia" });
+          let y = 1.1;
+          const hasExtra = (sl.table && sl.table.headers && sl.table.rows && sl.table.rows.length) || (Array.isArray(sl.flow) && sl.flow.length);
+          if(sl.explanation){
+            s.addText(String(sl.explanation), { x:0.6,y,w:8.8,h:0.85, fontSize:11.5, italic:true, color:"5A4A78" });
+            y += 0.95;
+          }
+          const bulletH = hasExtra ? 1.5 : (4.6 - y + 1.1);
+          if((sl.bullets||[]).length){
+            s.addText((sl.bullets||[]).map(b=>({text:b, options:{bullet:true, breakLine:true}})), { x:0.6,y,w:8.8,h:bulletH, fontSize:14.5, color:"2E2540" });
+            y += bulletH + 0.1;
+          }
+          if(sl.table && sl.table.headers && sl.table.rows && sl.table.rows.length){
+            try{
+              const headerRow = sl.table.headers.map(h=>({ text:String(h), options:{ bold:true, fill:{color:"EDE7F8"}, color:"5A3FA0", fontSize:11 } }));
+              const bodyRows = sl.table.rows.map(row=> row.map(cell=>({ text:String(cell), options:{ fontSize:10.5, color:"2E2540" } })));
+              s.addTable([headerRow, ...bodyRows], { x:0.6, y, w:8.8, autoPage:false, border:{type:"solid", color:"D8CFEE", pt:0.75}, fontFace:"Arial" });
+            }catch(e){ /* si falla la tabla, la sección conserva su explicación y viñetas */ }
+          } else if(Array.isArray(sl.flow) && sl.flow.length){
+            try{
+              const steps = sl.flow.slice(0,6);
+              const gap = 0.22;
+              const boxW = Math.min(2.1, (8.8 - gap*(steps.length-1)) / steps.length);
+              let x = 0.6;
+              steps.forEach((step,i)=>{
+                s.addText(String(step), { x, y, w:boxW, h:0.8, fontSize:10.5, align:"center", valign:"middle",
+                  fill:{color:"EDE7F8"}, line:{color:"8465C9", width:1}, color:"3B2F63" });
+                x += boxW;
+                if(i < steps.length-1){
+                  s.addText("→", { x, y, w:gap, h:0.8, fontSize:15, align:"center", valign:"middle", color:"8465C9", bold:true });
+                  x += gap;
+                }
+              });
+            }catch(e){ /* si falla el diagrama, la sección conserva su explicación y viñetas */ }
+          }
         });
         const blob = await pptx.write({ outputType:"blob" });
         browserSave((outline.title||title).slice(0,60)+".pptx", blob);
@@ -1031,9 +1155,61 @@ Responde SOLO con JSON: {"title":"...", "slides":[{"title":"...","bullets":["...
     const doc = new jsPDF({ unit:"pt", format:"a4" });
     const pageW = doc.internal.pageSize.getWidth(), pageH = doc.internal.pageSize.getHeight();
     const marginX = 48, maxW = pageW - marginX*2;
-    const purple = [90,63,160], ink = [46,37,64], faint = [150,140,170];
+    const purple = [90,63,160], ink = [46,37,64], faint = [150,140,170], boxFill = [237,231,248], boxLine = [132,101,201];
     let y = 68;
     const ensureSpace = lines=>{ if(y + lines*15 > pageH-56){ doc.addPage(); y = 56; } };
+    const truncateForCol = (text, w)=>{ const lines = doc.splitTextToSize(String(text), w); return lines[0] + (lines.length>1 ? "…" : ""); };
+
+    function drawTable(table){
+      try{
+        const cols = table.headers.length;
+        if(!cols) return;
+        const colW = maxW / cols, rowH = 22;
+        ensureSpace(3);
+        doc.setFillColor(...boxFill); doc.setDrawColor(...boxLine); doc.setLineWidth(0.75);
+        doc.rect(marginX, y, maxW, rowH, "FD");
+        doc.setFont("helvetica","bold"); doc.setFontSize(10); doc.setTextColor(...purple);
+        table.headers.forEach((h,i)=> doc.text(truncateForCol(h, colW-10), marginX + i*colW + 6, y + 14));
+        y += rowH;
+        doc.setFont("helvetica","normal"); doc.setFontSize(9.5); doc.setTextColor(...ink);
+        table.rows.forEach(row=>{
+          ensureSpace(2);
+          doc.setDrawColor(...boxLine); doc.setLineWidth(0.5);
+          doc.rect(marginX, y, maxW, rowH, "S");
+          row.forEach((cell,i)=> doc.text(truncateForCol(cell, colW-10), marginX + i*colW + 6, y + 14));
+          y += rowH;
+        });
+        y += 12;
+      }catch(e){ /* si falla la tabla, el resto de la sección se conserva */ }
+    }
+
+    function drawFlow(stepsIn){
+      try{
+        const steps = stepsIn.slice(0,6);
+        const gap = 8, arrowW = 18, boxH = 36;
+        const boxW = Math.min(120, (maxW - gap*(steps.length-1) - arrowW*(steps.length-1)) / steps.length);
+        ensureSpace(4);
+        let x = marginX;
+        doc.setFont("helvetica","bold"); doc.setFontSize(9);
+        steps.forEach((step,i)=>{
+          doc.setFillColor(...boxFill); doc.setDrawColor(...boxLine); doc.setLineWidth(0.75);
+          doc.rect(x, y, boxW, boxH, "FD");
+          doc.setTextColor(...ink);
+          const lines = doc.splitTextToSize(String(step), boxW-8).slice(0,3);
+          doc.text(lines, x+4, y+14);
+          x += boxW;
+          if(i < steps.length-1){
+            const midY = y + boxH/2;
+            doc.setDrawColor(...boxLine); doc.setLineWidth(1.2);
+            doc.line(x+2, midY, x+arrowW-5, midY);
+            doc.setFillColor(...boxLine);
+            doc.triangle(x+arrowW-5, midY-4, x+arrowW-5, midY+4, x+arrowW+1, midY, "F");
+            x += arrowW;
+          }
+        });
+        y += boxH + 16;
+      }catch(e){ /* si falla el diagrama, el resto de la sección se conserva */ }
+    }
 
     doc.setFont("helvetica","bold"); doc.setFontSize(20); doc.setTextColor(...purple);
     const titleLines = doc.splitTextToSize(outline.title||title, maxW);
@@ -1045,12 +1221,20 @@ Responde SOLO con JSON: {"title":"...", "slides":[{"title":"...","bullets":["...
       doc.setFont("helvetica","bold"); doc.setFontSize(13.5); doc.setTextColor(...purple);
       const hLines = doc.splitTextToSize(sl.title||"", maxW);
       doc.text(hLines, marginX, y); y += hLines.length*17 + 4;
+      if(sl.explanation){
+        doc.setFont("helvetica","normal"); doc.setFontSize(10.5); doc.setTextColor(...ink);
+        const eLines = doc.splitTextToSize(String(sl.explanation), maxW);
+        ensureSpace(eLines.length);
+        doc.text(eLines, marginX, y); y += eLines.length*13.5 + 6;
+      }
       doc.setFont("helvetica","normal"); doc.setFontSize(11); doc.setTextColor(...ink);
       (sl.bullets||[]).forEach(b=>{
         const bLines = doc.splitTextToSize("•  "+b, maxW-10);
         ensureSpace(bLines.length);
         doc.text(bLines, marginX+10, y); y += bLines.length*14.5 + 4;
       });
+      if(sl.table && sl.table.headers && sl.table.rows && sl.table.rows.length) drawTable(sl.table);
+      if(Array.isArray(sl.flow) && sl.flow.length) drawFlow(sl.flow);
       y += 10;
     });
     doc.setFont("helvetica","italic"); doc.setFontSize(8.5); doc.setTextColor(...faint);
@@ -1066,15 +1250,67 @@ Responde SOLO con JSON: {"title":"...", "slides":[{"title":"...","bullets":["...
       toast("No se pudo generar el Word — te di el esquema en un archivo de texto.");
       return;
     }
-    const { Document, Packer, Paragraph, TextRun, HeadingLevel } = window.docx;
+    const { Document, Packer, Paragraph, TextRun, HeadingLevel, Table, TableRow, TableCell, WidthType, BorderStyle, AlignmentType } = window.docx;
     const children = [
       new Paragraph({ text: outline.title||title, heading: HeadingLevel.HEADING_1 }),
       new Paragraph({ children:[ new TextRun({ text:"Generado con Sinapsis", italics:true, color:"8465C9" }) ] }),
       new Paragraph({ text:"" }),
     ];
+
+    function tryAddTable(table){
+      try{
+        if(!table.headers || !table.headers.length) return;
+        const borderSpec = { style: BorderStyle.SINGLE, size: 2, color: "D8CFEE" };
+        const borders = { top:borderSpec, bottom:borderSpec, left:borderSpec, right:borderSpec };
+        const headerRow = new TableRow({
+          children: table.headers.map(h=> new TableCell({
+            shading: { fill: "EDE7F8" }, borders,
+            children:[ new Paragraph({ children:[ new TextRun({ text:String(h), bold:true, color:"5A3FA0" }) ] }) ],
+          })),
+        });
+        const bodyRows = (table.rows||[]).map(row=> new TableRow({
+          children: row.map(cell=> new TableCell({
+            borders, children:[ new Paragraph({ text:String(cell) }) ],
+          })),
+        }));
+        children.push(new Table({ width:{ size:100, type: WidthType.PERCENTAGE }, rows:[headerRow, ...bodyRows] }));
+        children.push(new Paragraph({ text:"" }));
+      }catch(e){ /* si falla la tabla, el resto del documento se conserva */ }
+    }
+
+    function tryAddFlow(stepsIn){
+      try{
+        const steps = stepsIn.slice(0,6);
+        if(!steps.length) return;
+        const boxBorder = { style: BorderStyle.SINGLE, size: 2, color: "8465C9" };
+        const noBorder = { style: BorderStyle.NONE };
+        const cells = [];
+        steps.forEach((step,i)=>{
+          cells.push(new TableCell({
+            shading:{ fill:"EDE7F8" },
+            borders:{ top:boxBorder, bottom:boxBorder, left:boxBorder, right:boxBorder },
+            width:{ size: Math.floor(80/steps.length), type: WidthType.PERCENTAGE },
+            children:[ new Paragraph({ alignment: AlignmentType.CENTER, children:[ new TextRun({ text:String(step), bold:true, color:"3B2F63" }) ] }) ],
+          }));
+          if(i < steps.length-1){
+            cells.push(new TableCell({
+              width:{ size: Math.max(1, Math.floor(20/(steps.length-1))), type: WidthType.PERCENTAGE },
+              borders:{ top:noBorder, bottom:noBorder, left:noBorder, right:noBorder },
+              children:[ new Paragraph({ alignment: AlignmentType.CENTER, children:[ new TextRun({ text:"→", bold:true, color:"8465C9" }) ] }) ],
+            }));
+          }
+        });
+        children.push(new Table({ width:{ size:100, type: WidthType.PERCENTAGE }, rows:[ new TableRow({ children: cells }) ] }));
+        children.push(new Paragraph({ text:"" }));
+      }catch(e){ /* si falla el diagrama, el resto del documento se conserva */ }
+    }
+
     (outline.slides||[]).forEach(sl=>{
       children.push(new Paragraph({ text: sl.title||"", heading: HeadingLevel.HEADING_2 }));
+      if(sl.explanation) children.push(new Paragraph({ children:[ new TextRun({ text:String(sl.explanation) }) ] }));
       (sl.bullets||[]).forEach(b=> children.push(new Paragraph({ text:b, bullet:{ level:0 } })));
+      if(sl.table && sl.table.headers && sl.table.rows && sl.table.rows.length) tryAddTable(sl.table);
+      if(Array.isArray(sl.flow) && sl.flow.length) tryAddFlow(sl.flow);
       children.push(new Paragraph({ text:"" }));
     });
     try{
@@ -1147,7 +1383,7 @@ Responde SOLO con JSON: {"title":"...", "slides":[{"title":"...","bullets":["...
         <div class="card" style="display:flex;flex-direction:column;gap:12px">
           <div>
             <h3 class="section-title" style="font-size:15px;margin-bottom:2px">Sincronizar entre dispositivos</h3>
-            <p class="lede">Con una cuenta, tus mazos, apuntes, horario y progreso se guardan en la nube y aparecen igual en el celular, el iPad y el PC.</p>
+            <p class="lede">Con una cuenta, tus Flashcards, apuntes, horario y progreso se guardan en la nube y aparecen igual en el celular, el iPad y el PC.</p>
           </div>
           ${!cloudConfigured() ? `
             <div class="empty-note" style="text-align:left">La sincronización en la nube todavía no está activada en esta app (falta configurar el proyecto). Mientras tanto, todo se guarda solo en este dispositivo.</div>
@@ -1173,6 +1409,18 @@ Responde SOLO con JSON: {"title":"...", "slides":[{"title":"...","bullets":["...
           `}
         </div>
 
+        ${canSpeak ? `
+        <div class="card" style="display:flex;flex-direction:column;gap:10px">
+          <div>
+            <h3 class="section-title" style="font-size:15px;margin-bottom:2px">Voz</h3>
+            <p class="lede">Que el asistente de inicio y el tutor contesten en voz alta, además de mostrar el texto.</p>
+          </div>
+          <div class="chip-row">
+            <button class="chip ${state.profile.autoSpeak!==false?'active':''}" data-speak="on">🔊 Activada</button>
+            <button class="chip ${state.profile.autoSpeak===false?'active':''}" data-speak="off">🔇 Desactivada</button>
+          </div>
+        </div>` : ""}
+
         <div class="card" style="display:flex;flex-direction:column;gap:10px">
           <div>
             <h3 class="section-title" style="font-size:15px;margin-bottom:2px">Clave de IA (Anthropic)</h3>
@@ -1186,6 +1434,14 @@ Responde SOLO con JSON: {"title":"...", "slides":[{"title":"...","bullets":["...
       </div>
     `;
     $("#backFromSettings").onclick = ()=>{ state.tab = state.prevTab || "tutor"; render(); };
+    if(canSpeak){
+      $$("[data-speak]").forEach(b=> b.onclick = ()=>{
+        state.profile.autoSpeak = b.dataset.speak === "on";
+        if(!state.profile.autoSpeak) window.speechSynthesis.cancel();
+        saveProfile();
+        renderSettingsScreen();
+      });
+    }
     $("#apiKeyInput").oninput = e=> state.apiKeyDraft = e.target.value;
     $("#saveKeyBtn").onclick = ()=>{
       const v = state.apiKeyDraft.trim();
@@ -1315,13 +1571,14 @@ Instrucción: "${text}"`;
     const action = data && data.action;
     if(action==="open_tab" && TAB_LABELS[data.tab]){
       state.tab = data.tab; render();
+      announce(`Abriendo ${TAB_LABELS[data.tab]}.`);
     } else if(action==="add_reminder"){
       state.remForm = {
         title: data.title||"", type: REM_TYPES.includes(data.type)? data.type : "Parcial",
         date: /^\d{4}-\d{2}-\d{2}$/.test(data.date||"") ? data.date : "", subject: data.subject||"",
       };
       state.tab = "addReminder"; render();
-      toast("Revisa los datos y guarda el recordatorio.");
+      announce("Revisa los datos y guarda el recordatorio.");
     } else if(action==="add_class"){
       state.schedForm = {
         day: DAYS.includes(data.day)? data.day : "Lunes",
@@ -1329,7 +1586,7 @@ Instrucción: "${text}"`;
         subject: data.subject||"", place: data.place||"",
       };
       state.tab = "addClass"; render();
-      toast("Revisa los datos y guarda la clase.");
+      announce("Revisa los datos y guarda la clase.");
     } else if(action==="ask_tutor" && data.question){
       state.tab = "tutor"; render();
       askTutor(data.question);
@@ -1337,7 +1594,7 @@ Instrucción: "${text}"`;
       state.tab = "cards"; render();
       generateDeck(data.topic);
     } else {
-      toast("No entendí bien esa instrucción — puedes intentarlo de otra forma o usar los accesos rápidos.");
+      announce("No entendí bien esa instrucción — puedes intentarlo de otra forma o usar los accesos rápidos.");
     }
   }
 
@@ -1420,19 +1677,19 @@ Instrucción: "${text}"`;
       <div class="screen">
         <div class="stat-row">
           <div class="stat-tile"><div class="stat-num mono">${due.length}</div><div class="stat-label">Para hoy</div></div>
-          <div class="stat-tile"><div class="stat-num mono">${state.decks.length}</div><div class="stat-label">Mazos</div></div>
+          <div class="stat-tile"><div class="stat-num mono">${state.decks.length}</div><div class="stat-label">Flashcards</div></div>
           <div class="stat-tile"><div class="stat-num mono">${state.cards.length}</div><div class="stat-label">Tarjetas</div></div>
         </div>
         <button class="btn btn-primary" id="reviewBtn" ${due.length? "" : "disabled"}>${due.length? `Repasar ${due.length} tarjeta${due.length===1?"":"s"}` : "No hay tarjetas pendientes"}</button>
 
         <div class="section-head"><h2 class="section-title">Flashcards</h2></div>
         <div style="display:flex;flex-direction:column;gap:10px" id="deckList">
-          ${state.decks.length ? state.decks.map(deckRow).join("") : `<div class="empty-note">Todavía no tienes mazos. Genera el primero abajo ↓</div>`}
+          ${state.decks.length ? state.decks.map(deckRow).join("") : `<div class="empty-note">Todavía no tienes Flashcards. Genera las primeras abajo ↓</div>`}
         </div>
 
         <div class="card" style="display:flex;flex-direction:column;gap:12px">
           <div>
-            <div class="eyebrow">Nuevo mazo · ${escapeHtml(stageLabel())}</div>
+            <div class="eyebrow">Nuevas Flashcards · ${escapeHtml(stageLabel())}</div>
             <h3 class="section-title" style="font-size:16px">¿Sobre qué tema quieres tarjetas?</h3>
           </div>
           <div class="chip-row">${PRESET_TOPICS.map(t=>`<button class="chip" data-topic="${escapeHtml(t)}">${escapeHtml(t)}</button>`).join("")}</div>
@@ -1487,7 +1744,7 @@ Instrucción: "${text}"`;
           <div style="font-size:34px">✅</div>
           <h2 class="section-title">¡Repaso completo!</h2>
           <p class="lede">Vuelve mañana para seguir con la racha.</p>
-          <button class="btn btn-primary" id="doneBtn" style="width:auto">Volver a mazos</button>
+          <button class="btn btn-primary" id="doneBtn" style="width:auto">Volver a Flashcards</button>
         </div>
       </div>`;
       $("#doneBtn").onclick = ()=>{ state.review.active=false; render(); };
@@ -1581,13 +1838,19 @@ Instrucción: "${text}"`;
         summarizeNote($("#noteTitle").value.trim(), text);
       };
     } else if(state.notesMode==="record"){
+      const effMode = canListen ? state.recMode : "audio";
       area.innerHTML = `
         <div class="card rec-panel">
+          ${canListen ? `
+          <div class="seg-toggle" style="display:flex;gap:8px;width:100%">
+            <button class="btn btn-sm ${effMode==='live'?'btn-eosin':'btn-ghost'}" id="recModeLive" ${state.rec.active?"disabled":""} style="flex:1">📝 Transcripción en vivo</button>
+            <button class="btn btn-sm ${effMode==='audio'?'btn-eosin':'btn-ghost'}" id="recModeAudio" ${state.rec.active?"disabled":""} style="flex:1">🎧 Solo grabar audio</button>
+          </div>` : ""}
           <button class="rec-circle ${state.rec.active?'active':''}" id="recBtn">${state.rec.active? "⏹️" : "🎙️"}</button>
           <div class="rec-timer mono" id="recTimer">${fmtTime(state.rec.seconds)}</div>
           <div class="rec-status">${state.rec.active? "Grabando…" : (state.rec.transcript||state.rec.audioBlob ? "Listo" : "Toca para empezar a grabar la clase")}</div>
           ${!canListen ? `<div class="lede" style="text-align:center">Este navegador no transcribe en vivo, pero puedes grabar el audio.</div>` : ""}
-          <textarea id="transcriptBox" class="transcript-box" placeholder="Aquí aparecerá la transcripción en vivo…">${escapeHtml(state.rec.transcript)}</textarea>
+          ${effMode==="live" ? `<textarea id="transcriptBox" class="transcript-box" placeholder="Aquí aparecerá la transcripción en vivo…">${escapeHtml(state.rec.transcript)}</textarea>` : `<div class="lede" style="text-align:center">Se grabará el audio de la clase. Al terminar puedes descargarlo o resumirlo si escribes o pegas la transcripción abajo.</div><textarea id="transcriptBox" class="transcript-box" placeholder="(Opcional) pega aquí la transcripción si la tienes…">${escapeHtml(state.rec.transcript)}</textarea>`}
           <div class="note-btn-row" style="width:100%">
             ${state.rec.audioBlob ? `<button class="btn btn-soft btn-sm" id="saveAudioBtn">💾 Descargar audio</button>` : ""}
             ${state.rec.transcript.trim() ? `<button class="btn btn-eosin btn-sm" id="sumClassBtn">✨ Resumir con IA</button>` : ""}
@@ -1597,6 +1860,8 @@ Instrucción: "${text}"`;
       $("#transcriptBox").oninput = e=> state.rec.transcript = e.target.value;
       $("#saveAudioBtn") && ($("#saveAudioBtn").onclick = saveRecordingAudio);
       $("#sumClassBtn") && ($("#sumClassBtn").onclick = ()=> summarizeNote("", state.rec.transcript, "Clase — "+new Date().toLocaleDateString()));
+      $("#recModeLive") && ($("#recModeLive").onclick = ()=>{ state.recMode = "live"; renderModeArea(); });
+      $("#recModeAudio") && ($("#recModeAudio").onclick = ()=>{ state.recMode = "audio"; renderModeArea(); });
     } else {
       const p = state.photo;
       area.innerHTML = `
@@ -1815,9 +2080,9 @@ Instrucción: "${text}"`;
           <div class="eyebrow" style="margin-bottom:10px">Últimos 7 días</div>
           <div class="bars">${days.map(d=>`<div class="bar-col"><div class="bar ${d.count?'active':''}" style="height:${Math.max(6,d.count/maxCount*90)}px"></div><div class="bar-label mono">${d.label}</div></div>`).join("")}</div>
         </div>
-        <div class="section-head"><h2 class="section-title">Por mazo</h2></div>
+        <div class="section-head"><h2 class="section-title">Por Flashcards</h2></div>
         <div style="display:flex;flex-direction:column;gap:10px">
-          ${state.decks.length ? state.decks.map(deckRow).join("") : `<div class="empty-note">Crea tu primer mazo en la pestaña Tarjetas.</div>`}
+          ${state.decks.length ? state.decks.map(deckRow).join("") : `<div class="empty-note">Crea tus primeras Flashcards en la pestaña Tarjetas.</div>`}
         </div>
       </div>
     `;
@@ -1851,16 +2116,14 @@ Instrucción: "${text}"`;
   $("#syncFlagBtn").addEventListener("click", openSettings);
   $("#homeBtn").addEventListener("click", ()=>{ state.tab = "home"; state.review.active=false; render(); });
 
-  if("serviceWorker" in navigator){
-    window.addEventListener("load", ()=>{ navigator.serviceWorker.register("sw.js").catch(()=>{}); });
-  }
-
-  loadAll();
-  render();
+  // El registro del service worker vive antes de este IIFE (ver arriba) para que
+  // nunca dependa de que el resto de la app arranque sin errores.
+  try{ loadAll(); }catch(e){ try{ console.error("loadAll failed", e); }catch(_){} }
+  try{ render(); }catch(e){ try{ console.error("initial render failed", e); }catch(_){} }
   // Deferred so the very first paint (greeting screen) never waits on the
   // Firebase SDK — cloud sync quietly connects in the background afterward.
   if(cloudConfigured()){
-    const kickoff = ()=>initCloud();
+    const kickoff = ()=>{ try{ initCloud(); }catch(e){ try{ console.error("initCloud failed", e); }catch(_){} } };
     if("requestIdleCallback" in window) requestIdleCallback(kickoff, { timeout:2000 });
     else setTimeout(kickoff, 300);
   }
