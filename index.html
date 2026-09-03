@@ -68,7 +68,16 @@
     display:flex; align-items:center; gap:5px; background:var(--warn-soft); color:var(--warn);
     padding:5px 10px 5px 8px; border-radius:999px; font-size:13px; font-weight:600;
   }
-  .sync-flag{ font-size:10px; color:var(--ink-faint); border:1px solid var(--line); border-radius:999px; padding:3px 8px; }
+  .sync-flag{ font-size:10px; color:var(--ink-faint); border:1px solid var(--line); border-radius:999px; padding:3px 8px; background:none; cursor:pointer; font-family:inherit; }
+  .sync-flag.synced{ color:var(--good); border-color:var(--good-soft); }
+  .gear-btn{ background:none; border:none; font-size:18px; color:var(--ink-soft); cursor:pointer; padding:4px; line-height:1; }
+  .auth-field{ display:flex; flex-direction:column; gap:10px; }
+  .account-row{ display:flex; align-items:center; justify-content:space-between; gap:10px; background:var(--paper-soft); border-radius:var(--radius-s); padding:10px 12px; }
+  .account-email{ font-size:13px; font-weight:600; word-break:break-all; }
+  .sync-pill{ font-size:11px; font-weight:600; border-radius:999px; padding:3px 9px; }
+  .sync-pill.ok{ background:var(--good-soft); color:var(--good); }
+  .sync-pill.busy{ background:var(--warn-soft); color:var(--warn); }
+  .sync-pill.off{ background:var(--sage); color:var(--ink-soft); }
 
   main{ flex:1; padding:16px 16px 100px; overflow-x:hidden; }
   .screen{ display:flex; flex-direction:column; gap:14px; animation:rise .28s ease both; }
@@ -253,6 +262,19 @@
   }
   @keyframes toastin{ from{opacity:0; transform:translate(-50%,8px);} to{opacity:1; transform:translate(-50%,0);} }
 
+  .modal-overlay{
+    position:fixed; inset:0; z-index:60; background:rgba(20,14,32,.45);
+    display:flex; align-items:flex-end; justify-content:center;
+    animation:modalin .18s ease both;
+  }
+  @keyframes modalin{ from{opacity:0;} to{opacity:1;} }
+  .modal-sheet{
+    width:100%; max-width:520px; background:var(--surface); border-radius:20px 20px 0 0;
+    padding:20px 18px calc(20px + env(safe-area-inset-bottom)); box-shadow:0 -8px 30px rgba(0,0,0,.2);
+    animation:modalsheetin .22s cubic-bezier(.2,.7,.3,1) both;
+  }
+  @keyframes modalsheetin{ from{transform:translateY(24px);} to{transform:translateY(0);} }
+
   ::-webkit-scrollbar{ width:0; height:0; }
 </style>
 </head>
@@ -260,10 +282,11 @@
 
 <div id="app">
   <header class="topbar">
-    <div class="brand"><span class="brand-mark">🔬</span><h1>Sinapsis</h1></div>
+    <button class="brand" id="homeBtn" style="background:none;border:none;cursor:pointer;padding:0" aria-label="Inicio"><span class="brand-mark">🔬</span><h1>Sinapsis</h1></button>
     <div class="badge-row">
       <div class="streak-badge"><span>🔥</span><span class="mono" id="streakCount">0</span></div>
-      <span class="sync-flag mono">en este dispositivo</span>
+      <button class="sync-flag mono" id="syncFlagBtn">en este dispositivo</button>
+      <button class="gear-btn" id="settingsBtn" title="Ajustes" aria-label="Ajustes">⚙️</button>
     </div>
   </header>
   <main id="content"></main>
@@ -352,13 +375,163 @@
     });
   }
 
+  /* ---------- Cloud sync (cuenta multiplataforma) ----------
+     Firebase Auth + Firestore: la forma estándar de tener cuentas y
+     sincronización entre dispositivos sin mantener un servidor propio.
+     GitHub Pages solo sirve archivos estáticos, así que la nube va aquí.
+     Para activarlo: crear un proyecto gratis en https://console.firebase.google.com,
+     activar Authentication → Email/Password y Firestore Database, y pegar la
+     configuración del proyecto ("Firebase config") abajo. Mientras tenga los
+     valores de ejemplo, la app funciona igual que antes (solo en este dispositivo). */
+  const FIREBASE_CONFIG = {
+    apiKey: "AIzaSyD--ZrWGN8tBxHvfPli0otLeNW2S2auw6Q",
+    authDomain: "sinapsis-cb2b3.firebaseapp.com",
+    projectId: "sinapsis-cb2b3",
+    storageBucket: "sinapsis-cb2b3.firebasestorage.app",
+    messagingSenderId: "585245260030",
+    appId: "1:585245260030:web:342209b50303a60f6a4daf",
+  };
+  function cloudConfigured(){ return !/^PEGA_AQUI/.test(FIREBASE_CONFIG.apiKey); }
+
+  const cloud = {
+    ready:false, loading:false, user:null, unsub:null, syncing:false, pulling:false,
+    saveTimer:null, authError:"",
+  };
+  const SYNC_FIELDS = ["decks","cards","notes","schedule","reminders","stats","chat","profile"];
+
+  function loadFirebaseScripts(){
+    return new Promise((resolve, reject)=>{
+      if(window.firebase && window.firebase.apps){ resolve(); return; }
+      const V = "10.13.2";
+      const urls = [
+        `https://www.gstatic.com/firebasejs/${V}/firebase-app-compat.js`,
+        `https://www.gstatic.com/firebasejs/${V}/firebase-auth-compat.js`,
+        `https://www.gstatic.com/firebasejs/${V}/firebase-firestore-compat.js`,
+      ];
+      const loadOne = i => {
+        if(i>=urls.length) return resolve();
+        const s = document.createElement("script");
+        s.src = urls[i]; s.onload = ()=>loadOne(i+1); s.onerror = reject;
+        document.head.appendChild(s);
+      };
+      loadOne(0);
+    });
+  }
+
+  async function initCloud(){
+    if(!cloudConfigured() || cloud.loading || cloud.ready) return;
+    cloud.loading = true;
+    try{
+      await loadFirebaseScripts();
+      if(!window.firebase.apps.length) window.firebase.initializeApp(FIREBASE_CONFIG);
+      cloud.auth = window.firebase.auth();
+      cloud.db = window.firebase.firestore();
+      try{ await cloud.db.enablePersistence({ synchronizeTabs:true }); }catch(e){ /* multi-tab or unsupported: sigue funcionando en línea */ }
+      cloud.ready = true;
+      cloud.auth.onAuthStateChanged(onAuthChanged);
+    }catch(e){
+      cloud.authError = "No se pudo conectar con la nube ahora mismo.";
+    }finally{ cloud.loading = false; if(state.tab==="settings") renderSettingsScreen(); updateSyncFlag(); }
+  }
+
+  function onAuthChanged(user){
+    cloud.user = user;
+    if(cloud.unsub){ cloud.unsub(); cloud.unsub = null; }
+    if(user){
+      cloud.pulling = true; updateSyncFlag();
+      const ref = cloud.db.collection("users").doc(user.uid);
+      ref.get().then(snap=>{
+        if(snap.exists){
+          const data = snap.data() || {};
+          SYNC_FIELDS.forEach(f=>{ if(data[f]!==undefined) state[f] = data[f]; });
+          persistSyncFieldsLocally();
+        } else {
+          // Primera vez con cuenta en cualquier dispositivo: sube lo que ya
+          // había localmente para no perder nada.
+          pushStateToCloud(true);
+        }
+        cloud.pulling = false;
+        state.stageDraft = stageLabel(); state.nameDraft = state.profile.name || "";
+        cloud.unsub = ref.onSnapshot(snap=>{
+          if(!snap.exists || cloud.syncing) return; // ignora el eco de nuestra propia escritura
+          const data = snap.data() || {};
+          SYNC_FIELDS.forEach(f=>{ if(data[f]!==undefined) state[f] = data[f]; });
+          persistSyncFieldsLocally();
+          state.stageDraft = stageLabel(); state.nameDraft = state.profile.name || "";
+          render();
+        });
+        render(); updateSyncFlag();
+      }).catch(()=>{ cloud.pulling = false; updateSyncFlag(); });
+    } else {
+      updateSyncFlag();
+    }
+  }
+
+  function persistSyncFieldsLocally(){
+    lsSet(LS.decks, state.decks); lsSet(LS.cards, state.cards); lsSet(LS.notes, state.notes);
+    lsSet(LS.schedule, state.schedule); lsSet(LS.reminders, state.reminders);
+    lsSet(LS.stats, state.stats); lsSet(LS.chat, state.chat.slice(-40)); lsSet(LS.profile, state.profile);
+  }
+
+  function queueCloudSync(){
+    if(!cloud.ready || !cloud.user) return;
+    clearTimeout(cloud.saveTimer);
+    cloud.saveTimer = setTimeout(()=>pushStateToCloud(false), 900);
+  }
+
+  function pushStateToCloud(isInitialPush){
+    if(!cloud.ready || !cloud.user) return;
+    cloud.syncing = true; updateSyncFlag();
+    const payload = {}; SYNC_FIELDS.forEach(f=> payload[f] = f==="chat" ? state.chat.slice(-40) : state[f]);
+    payload.updatedAt = Date.now();
+    cloud.db.collection("users").doc(cloud.user.uid).set(payload, { merge:true })
+      .catch(()=>{ toast("No se pudo sincronizar con la nube (revisa tu conexión)."); })
+      .finally(()=>{ setTimeout(()=>{ cloud.syncing = false; updateSyncFlag(); }, 250); });
+  }
+
+  function updateSyncFlag(){
+    const btn = $("#syncFlagBtn"); if(!btn) return;
+    btn.classList.toggle("synced", !!(cloud.user && !cloud.syncing && !cloud.pulling));
+    if(cloud.pulling) btn.textContent = "sincronizando…";
+    else if(cloud.user && cloud.syncing) btn.textContent = "guardando…";
+    else if(cloud.user) btn.textContent = cloud.user.email;
+    else btn.textContent = "en este dispositivo";
+  }
+
+  async function cloudSignUp(email, pass){
+    await initCloud();
+    if(!cloud.ready) throw new Error("no_cloud");
+    return cloud.auth.createUserWithEmailAndPassword(email, pass);
+  }
+  async function cloudLogIn(email, pass){
+    await initCloud();
+    if(!cloud.ready) throw new Error("no_cloud");
+    return cloud.auth.signInWithEmailAndPassword(email, pass);
+  }
+  function cloudLogOut(){ if(cloud.auth) cloud.auth.signOut(); }
+
+  function authErrorCopy(e){
+    if(e && e.message==="no_cloud") return "La sincronización en la nube todavía no está activada en esta app.";
+    const known = ({
+      "auth/email-already-in-use":"Ya existe una cuenta con ese correo — intenta iniciar sesión.",
+      "auth/invalid-email":"Ese correo no parece válido.",
+      "auth/weak-password":"La contraseña debe tener al menos 6 caracteres.",
+      "auth/wrong-password":"Contraseña incorrecta.",
+      "auth/user-not-found":"No hay cuenta con ese correo — puedes crear una.",
+      "auth/network-request-failed":"No hay conexión a internet en este momento.",
+      "auth/invalid-credential":"Correo o contraseña incorrectos.",
+      "auth/too-many-requests":"Demasiados intentos. Espera un momento y vuelve a intentar.",
+    })[e && e.code];
+    return known || "No se pudo completar la operación. Intenta de nuevo.";
+  }
+
   /* ---------- state ---------- */
   const state = {
-    tab: "tutor",
+    tab: "home", prevTab:"tutor",
     chat: [], chatBusy:false, listening:false, speakingIdx:null,
     decks: [], cards: [], notes: [],
     schedule: [], reminders: [],
-    profile: { stage: "Primer semestre" }, stageDraft:"",
+    profile: { stage: "Primer semestre", name:"" }, stageDraft:"", nameDraft:"",
     stats: { streakDays:0, lastStudyDate:null, totalReviews:0, correctReviews:0, daily:{} },
     review: { active:false, queue:[], idx:0, flipped:false },
     genTopic:"", genBusy:false,
@@ -367,7 +540,9 @@
     photo: { file:null, previewUrl:null, question:"", answer:"", asking:false },
     schedForm: { day:"Lunes", time:"", subject:"", place:"" },
     remForm: { title:"", type:"Parcial", date:"", subject:"" },
-    pptxReady:false, pptxLoading:false, apiKeyDraft:"",
+    apiKeyDraft:"",
+    authMode:"login", authEmail:"", authPass:"", authBusy:false,
+    homeListening:false, homeCommand:"", homeBusy:false,
   };
 
   const PRESET_TOPICS = ["Anatomía general","Histología","Bioquímica básica","Embriología","Terminología médica","Fisiología celular"];
@@ -424,6 +599,7 @@
     state.profile = Object.assign(state.profile, lsGet(LS.profile, {}));
     if(!state.decks.length) seedLocalExample();
     state.stageDraft = stageLabel();
+    state.nameDraft = state.profile.name || "";
   }
 
   function seedLocalExample(){
@@ -445,19 +621,19 @@
 
   function saveDeckAndCards(deck, cards){
     state.decks.push(deck); cards.forEach(c=>state.cards.push(c));
-    lsSet(LS.decks, state.decks); lsSet(LS.cards, state.cards);
+    lsSet(LS.decks, state.decks); lsSet(LS.cards, state.cards); queueCloudSync();
   }
   function saveCard(card){
     const idx = state.cards.findIndex(c=>c.id===card.id);
     if(idx>-1) state.cards[idx] = card; else state.cards.push(card);
-    lsSet(LS.cards, state.cards);
+    lsSet(LS.cards, state.cards); queueCloudSync();
   }
-  function saveNote(note){ state.notes.unshift(note); lsSet(LS.notes, state.notes); }
-  function saveStats(){ lsSet(LS.stats, state.stats); }
-  function saveChat(){ lsSet(LS.chat, state.chat.slice(-40)); }
-  function saveProfile(){ lsSet(LS.profile, state.profile); }
-  function saveSchedule(){ lsSet(LS.schedule, state.schedule); }
-  function saveReminders(){ lsSet(LS.reminders, state.reminders); }
+  function saveNote(note){ state.notes.unshift(note); lsSet(LS.notes, state.notes); queueCloudSync(); }
+  function saveStats(){ lsSet(LS.stats, state.stats); queueCloudSync(); }
+  function saveChat(){ lsSet(LS.chat, state.chat.slice(-40)); queueCloudSync(); }
+  function saveProfile(){ lsSet(LS.profile, state.profile); queueCloudSync(); }
+  function saveSchedule(){ lsSet(LS.schedule, state.schedule); queueCloudSync(); }
+  function saveReminders(){ lsSet(LS.reminders, state.reminders); queueCloudSync(); }
 
   /* ---------- SM-2 ---------- */
   function sm2(card, quality){
@@ -672,29 +848,57 @@ Responde SOLO con un array JSON: [{"front":"...","back":"..."}, ...]`;
   }
 
   /* ---------- Class recording ---------- */
+  // MediaRecorder mime support varies a lot by browser (Safari/iOS in particular
+  // does not support audio/webm). Pick the first the browser actually supports.
+  function pickRecorderMime(){
+    if(!window.MediaRecorder || !MediaRecorder.isTypeSupported) return null;
+    const candidates = ["audio/webm;codecs=opus","audio/webm","audio/mp4","audio/aac","audio/ogg;codecs=opus"];
+    for(const c of candidates){ try{ if(MediaRecorder.isTypeSupported(c)) return c; }catch(e){} }
+    return null;
+  }
+
   function startRecording(){
-    state.rec = { active:true, seconds:0, transcript:"", chunks:[], mediaRecorder:null, recog:null, timerId:null, audioBlob:null };
+    state.rec = { active:true, seconds:0, transcript:"", chunks:[], mediaRecorder:null, recog:null, timerId:null, audioBlob:null, recogErrors:0, recogDenied:false };
     render();
     state.rec.timerId = setInterval(()=>{ state.rec.seconds++; const el=$("#recTimer"); if(el) el.textContent = fmtTime(state.rec.seconds); }, 1000);
 
-    navigator.mediaDevices?.getUserMedia({ audio:true }).then(stream=>{
-      try{
-        const mr = new MediaRecorder(stream);
-        mr.ondataavailable = e=>{ if(e.data.size>0) state.rec.chunks.push(e.data); };
-        mr.onstop = ()=>{ state.rec.audioBlob = new Blob(state.rec.chunks, {type: mr.mimeType||"audio/webm"}); stream.getTracks().forEach(t=>t.stop()); render(); };
-        mr.start();
-        state.rec.mediaRecorder = mr;
-      }catch(e){}
-    }).catch(()=>{ toast("No se pudo acceder al micrófono (revisa el permiso del navegador)."); });
+    if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.MediaRecorder){
+      toast("Este navegador no permite grabar audio. Puedes usar la transcripción en vivo si está disponible.");
+    } else {
+      navigator.mediaDevices.getUserMedia({ audio:true }).then(stream=>{
+        // The recording could have been cancelled while the permission prompt was open.
+        if(!state.rec.active){ stream.getTracks().forEach(t=>t.stop()); return; }
+        try{
+          const mimeType = pickRecorderMime();
+          const mr = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+          mr.ondataavailable = e=>{ if(e.data.size>0) state.rec.chunks.push(e.data); };
+          mr.onstop = ()=>{ state.rec.audioBlob = new Blob(state.rec.chunks, {type: mr.mimeType||"audio/webm"}); stream.getTracks().forEach(t=>t.stop()); render(); };
+          mr.start();
+          state.rec.mediaRecorder = mr;
+        }catch(e){ toast("No se pudo iniciar la grabación de audio en este navegador."); }
+      }).catch(()=>{
+        // Without this, the panel was left stuck on "Grabando…" forever with the
+        // timer still running — this was the main cause of the app feeling frozen.
+        toast("No se pudo acceder al micrófono. Revisa el permiso de micrófono para este sitio.");
+        if(!state.rec.mediaRecorder) stopRecording();
+      });
+    }
 
     if(canListen){
       const runRecognition = ()=>{
-        if(!state.rec.active) return;
+        if(!state.rec.active || state.rec.recogDenied) return;
+        // After repeated failures, stop retrying live transcription instead of
+        // spinning forever — the audio recording above keeps working regardless.
+        if(state.rec.recogErrors >= 4){
+          const status = $(".rec-status"); if(status) status.textContent = "Grabando audio (sin transcripción en vivo).";
+          return;
+        }
         const rec = new SpeechRec();
         rec.lang = (navigator.language||"es-ES").startsWith("es") ? navigator.language : "es-ES";
         rec.continuous = true; rec.interimResults = true;
-        let sessionFinal = "";
+        let sessionFinal = "", gotResult = false;
         rec.onresult = (e)=>{
+          gotResult = true; state.rec.recogErrors = 0;
           let interim = "";
           for(let i=e.resultIndex;i<e.results.length;i++){
             const t = e.results[i][0].transcript;
@@ -705,10 +909,23 @@ Responde SOLO con un array JSON: [{"front":"...","back":"..."}, ...]`;
         };
         rec.onend = ()=>{
           state.rec.transcript = (state.rec.transcript + " " + sessionFinal).trim();
-          if(state.rec.active) runRecognition();
+          if(!gotResult) state.rec.recogErrors += 1;
+          if(state.rec.active && !state.rec.recogDenied){
+            // Small delay instead of restarting instantly — an immediate, unthrottled
+            // restart loop on repeated errors is what pegged the CPU and froze the tab.
+            setTimeout(runRecognition, 500);
+          }
         };
-        rec.onerror = ()=>{};
-        try{ rec.start(); state.rec.recog = rec; }catch(e){}
+        rec.onerror = (e)=>{
+          if(e && (e.error==="not-allowed" || e.error==="service-not-allowed")){
+            state.rec.recogDenied = true;
+            toast("Permiso de micrófono denegado para la transcripción en vivo.");
+          } else {
+            state.rec.recogErrors += 1;
+          }
+        };
+        try{ rec.start(); state.rec.recog = rec; }
+        catch(e){ state.rec.recogErrors += 1; if(state.rec.active) setTimeout(runRecognition, 500); }
       };
       runRecognition();
     }
@@ -726,33 +943,61 @@ Responde SOLO con un array JSON: [{"front":"...","back":"..."}, ...]`;
 
   function saveRecordingAudio(){
     if(!state.rec.audioBlob){ toast("No hay audio para guardar."); return; }
-    browserSave(`clase-${todayStr()}.webm`, state.rec.audioBlob);
+    const type = state.rec.audioBlob.type || "audio/webm";
+    const ext = type.includes("mp4") ? "m4a" : type.includes("ogg") ? "ogg" : type.includes("aac") ? "aac" : "webm";
+    browserSave(`clase-${todayStr()}.${ext}`, state.rec.audioBlob);
     toast("Audio descargado.");
   }
 
-  /* ---------- Presentations ---------- */
-  function ensurePptxLib(){
-    if(state.pptxReady || state.pptxLoading) return;
-    state.pptxLoading = true;
-    const s = document.createElement("script");
-    s.src = "https://cdnjs.cloudflare.com/ajax/libs/pptxgenjs/3.12.0/pptxgen.bundle.js";
-    s.onload = ()=>{ state.pptxReady = !!window.PptxGenJS; state.pptxLoading = false; };
-    s.onerror = ()=>{ state.pptxReady = false; state.pptxLoading = false; };
-    document.head.appendChild(s);
+  /* ---------- Exportar: PPTX, PDF, Word ----------
+     Cada librería es pesada (cientos de KB) y muchos estudiantes solo usarán
+     uno o dos formatos — por eso cada una se descarga solo la primera vez que
+     realmente se pide ese formato, nunca al abrir la app. Las tres comparten
+     un único esquema generado por IA (un solo gasto de tokens) y cada una lo
+     traduce a su propio formato.
+  */
+  function lazyScript(flagKey, src, globalCheck){
+    if(state[flagKey+"Ready"]) return Promise.resolve(true);
+    if(state[flagKey+"Promise"]) return state[flagKey+"Promise"];
+    state[flagKey+"Promise"] = new Promise(resolve=>{
+      const s = document.createElement("script");
+      s.src = src;
+      s.onload = ()=>{ state[flagKey+"Ready"] = !!globalCheck(); resolve(state[flagKey+"Ready"]); };
+      s.onerror = ()=>{ state[flagKey+"Ready"] = false; resolve(false); };
+      document.head.appendChild(s);
+    });
+    return state[flagKey+"Promise"];
   }
-  ensurePptxLib();
+  const ensurePptxLib = ()=> lazyScript("pptx", "https://cdnjs.cloudflare.com/ajax/libs/pptxgenjs/3.12.0/pptxgen.bundle.js", ()=>window.PptxGenJS);
+  const ensureJsPdfLib = ()=> lazyScript("jspdf", "https://cdnjs.cloudflare.com/ajax/libs/jspdf/4.2.1/jspdf.umd.min.js", ()=>window.jspdf && window.jspdf.jsPDF);
+  const ensureDocxLib = ()=> lazyScript("docx", "https://cdn.jsdelivr.net/npm/docx@9.7.1/dist/index.iife.js", ()=>window.docx);
 
-  async function generatePresentation(title, materialText){
-    toast("Generando presentación…");
-    let outline;
-    try{
-      const prompt = `Convierte este material de estudio de medicina en un esquema de presentación (título de la presentación y 5-8 diapositivas).
+  async function getStudyOutline(title, materialText){
+    const prompt = `Convierte este material de estudio de medicina en un esquema de documento (título general y 5-8 secciones).
 Material ("""${title}"""): """${materialText.slice(0,3500)}"""
-Responde SOLO con JSON: {"title":"...", "slides":[{"title":"...","bullets":["...", "..."]}]} (2-4 bullets breves por diapositiva, en español).`;
-      outline = await callClaudeJSON(prompt, { maxTokens:1800 });
-    }catch(e){ toast(errorCopy(e)); return; }
+Responde SOLO con JSON: {"title":"...", "slides":[{"title":"...","bullets":["...", "..."]}]} (2-4 puntos breves por sección, en español).`;
+    return callClaudeJSON(prompt, { maxTokens:1800 });
+  }
 
-    if(state.pptxReady && window.PptxGenJS){
+  function outlineAsText(outline, title){
+    const lines = [outline.title||title, ""];
+    (outline.slides||[]).forEach((sl,i)=>{ lines.push(`${i+1}. ${sl.title}`); (sl.bullets||[]).forEach(b=>lines.push("   - "+b)); lines.push(""); });
+    return lines.join("\n");
+  }
+
+  async function exportAs(fmt, title, materialText){
+    toast("Generando documento…");
+    let outline;
+    try{ outline = await getStudyOutline(title, materialText); }
+    catch(e){ toast(errorCopy(e)); return; }
+    if(fmt==="pptx") return exportPptx(outline, title);
+    if(fmt==="pdf") return exportPdf(outline, title);
+    if(fmt==="docx") return exportDocx(outline, title);
+  }
+
+  async function exportPptx(outline, title){
+    const ok = await ensurePptxLib();
+    if(ok && window.PptxGenJS){
       try{
         const pptx = new window.PptxGenJS();
         const cover = pptx.addSlide();
@@ -769,23 +1014,331 @@ Responde SOLO con JSON: {"title":"...", "slides":[{"title":"...","bullets":["...
         browserSave((outline.title||title).slice(0,60)+".pptx", blob);
         toast("Presentación .pptx descargada.");
         return;
-      }catch(e){ /* fall through to text fallback */ }
+      }catch(e){ /* cae al respaldo de texto */ }
     }
-    const lines = [outline.title||title, ""];
-    (outline.slides||[]).forEach((sl,i)=>{ lines.push(`${i+1}. ${sl.title}`); (sl.bullets||[]).forEach(b=>lines.push("   - "+b)); lines.push(""); });
-    browserSave((outline.title||title).slice(0,60)+".md", lines.join("\n"));
+    browserSave((outline.title||title).slice(0,60)+".md", outlineAsText(outline, title));
     toast("No se pudo generar el .pptx — te di el esquema en un archivo de texto para pegarlo en Slides/PowerPoint.");
   }
+
+  async function exportPdf(outline, title){
+    const ok = await ensureJsPdfLib();
+    if(!ok || !window.jspdf){
+      browserSave((outline.title||title).slice(0,60)+".md", outlineAsText(outline, title));
+      toast("No se pudo generar el PDF — te di el esquema en un archivo de texto.");
+      return;
+    }
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ unit:"pt", format:"a4" });
+    const pageW = doc.internal.pageSize.getWidth(), pageH = doc.internal.pageSize.getHeight();
+    const marginX = 48, maxW = pageW - marginX*2;
+    const purple = [90,63,160], ink = [46,37,64], faint = [150,140,170];
+    let y = 68;
+    const ensureSpace = lines=>{ if(y + lines*15 > pageH-56){ doc.addPage(); y = 56; } };
+
+    doc.setFont("helvetica","bold"); doc.setFontSize(20); doc.setTextColor(...purple);
+    const titleLines = doc.splitTextToSize(outline.title||title, maxW);
+    doc.text(titleLines, marginX, y); y += titleLines.length*24 + 6;
+    doc.setDrawColor(...purple); doc.setLineWidth(1); doc.line(marginX, y, pageW-marginX, y); y += 22;
+
+    (outline.slides||[]).forEach(sl=>{
+      ensureSpace(2);
+      doc.setFont("helvetica","bold"); doc.setFontSize(13.5); doc.setTextColor(...purple);
+      const hLines = doc.splitTextToSize(sl.title||"", maxW);
+      doc.text(hLines, marginX, y); y += hLines.length*17 + 4;
+      doc.setFont("helvetica","normal"); doc.setFontSize(11); doc.setTextColor(...ink);
+      (sl.bullets||[]).forEach(b=>{
+        const bLines = doc.splitTextToSize("•  "+b, maxW-10);
+        ensureSpace(bLines.length);
+        doc.text(bLines, marginX+10, y); y += bLines.length*14.5 + 4;
+      });
+      y += 10;
+    });
+    doc.setFont("helvetica","italic"); doc.setFontSize(8.5); doc.setTextColor(...faint);
+    doc.text("Generado con Sinapsis", marginX, pageH-30);
+    doc.save((outline.title||title).slice(0,60)+".pdf");
+    toast("PDF descargado.");
+  }
+
+  async function exportDocx(outline, title){
+    const ok = await ensureDocxLib();
+    if(!ok || !window.docx){
+      browserSave((outline.title||title).slice(0,60)+".md", outlineAsText(outline, title));
+      toast("No se pudo generar el Word — te di el esquema en un archivo de texto.");
+      return;
+    }
+    const { Document, Packer, Paragraph, TextRun, HeadingLevel } = window.docx;
+    const children = [
+      new Paragraph({ text: outline.title||title, heading: HeadingLevel.HEADING_1 }),
+      new Paragraph({ children:[ new TextRun({ text:"Generado con Sinapsis", italics:true, color:"8465C9" }) ] }),
+      new Paragraph({ text:"" }),
+    ];
+    (outline.slides||[]).forEach(sl=>{
+      children.push(new Paragraph({ text: sl.title||"", heading: HeadingLevel.HEADING_2 }));
+      (sl.bullets||[]).forEach(b=> children.push(new Paragraph({ text:b, bullet:{ level:0 } })));
+      children.push(new Paragraph({ text:"" }));
+    });
+    try{
+      const doc = new Document({ sections:[{ children }] });
+      const blob = await Packer.toBlob(doc);
+      browserSave((outline.title||title).slice(0,60)+".docx", blob);
+      toast("Documento Word descargado.");
+    }catch(e){
+      browserSave((outline.title||title).slice(0,60)+".md", outlineAsText(outline, title));
+      toast("No se pudo generar el Word — te di el esquema en un archivo de texto.");
+    }
+  }
+
+  /* ---------- Menú de exportación (elegir formato) ---------- */
+  function openExportMenu(title, materialText){
+    closeExportMenu();
+    const wrap = document.createElement("div");
+    wrap.className = "modal-overlay"; wrap.id = "exportModal";
+    wrap.innerHTML = `
+      <div class="modal-sheet">
+        <div class="eyebrow">Exportar</div>
+        <h3 class="section-title" style="font-size:16px;margin-bottom:4px">${escapeHtml(title)}</h3>
+        <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px">
+          <button class="btn btn-soft btn-block" data-fmt="pptx">📊 Presentación (.pptx)</button>
+          <button class="btn btn-soft btn-block" data-fmt="pdf">📄 Documento PDF</button>
+          <button class="btn btn-soft btn-block" data-fmt="docx">📝 Documento Word (.docx)</button>
+          <button class="btn btn-ghost btn-block" id="cancelExportBtn">Cancelar</button>
+        </div>
+      </div>`;
+    document.body.appendChild(wrap);
+    wrap.addEventListener("click", e=>{ if(e.target===wrap) closeExportMenu(); });
+    $("#cancelExportBtn", wrap).onclick = closeExportMenu;
+    $$("[data-fmt]", wrap).forEach(b=> b.onclick = ()=>{
+      const fmt = b.dataset.fmt; closeExportMenu(); exportAs(fmt, title, materialText);
+    });
+  }
+  function closeExportMenu(){ const el = $("#exportModal"); if(el) el.remove(); }
 
   /* ---------- render: shell ---------- */
   function render(){
     $("#streakCount").textContent = state.stats.streakDays;
-    if(state.tab==="tutor") renderTutorScreen();
+    if(state.tab==="home") renderHomeScreen();
+    else if(state.tab==="tutor") renderTutorScreen();
     else if(state.tab==="cards") renderCardsScreen();
     else if(state.tab==="notes") renderNotesScreen();
     else if(state.tab==="agenda") renderAgendaScreen();
+    else if(state.tab==="addReminder") renderAddReminderScreen();
+    else if(state.tab==="addClass") renderAddClassScreen();
+    else if(state.tab==="settings") renderSettingsScreen();
     else renderProgressScreen();
     $$(".tab").forEach(b=> b.classList.toggle("active", b.dataset.tab===state.tab));
+    updateSyncFlag();
+  }
+
+  /* ---------- Settings (cuenta + clave de IA) ---------- */
+  function openSettings(){ state.prevTab = state.tab==="settings" ? state.prevTab : state.tab; state.tab = "settings"; render(); }
+
+  function renderSettingsScreen(){
+    const loggedIn = !!cloud.user;
+    content.innerHTML = `
+      <div class="screen">
+        <div class="section-head">
+          <div>
+            <div class="eyebrow">Ajustes</div>
+            <h2 class="section-title">Cuenta y sincronización</h2>
+          </div>
+          <button class="btn btn-ghost btn-sm" id="backFromSettings">← Volver</button>
+        </div>
+
+        <div class="card" style="display:flex;flex-direction:column;gap:12px">
+          <div>
+            <h3 class="section-title" style="font-size:15px;margin-bottom:2px">Sincronizar entre dispositivos</h3>
+            <p class="lede">Con una cuenta, tus mazos, apuntes, horario y progreso se guardan en la nube y aparecen igual en el celular, el iPad y el PC.</p>
+          </div>
+          ${!cloudConfigured() ? `
+            <div class="empty-note" style="text-align:left">La sincronización en la nube todavía no está activada en esta app (falta configurar el proyecto). Mientras tanto, todo se guarda solo en este dispositivo.</div>
+          ` : loggedIn ? `
+            <div class="account-row">
+              <div>
+                <div class="account-email">${escapeHtml(cloud.user.email||"")}</div>
+                <div class="lede" style="margin-top:2px">Sesión iniciada</div>
+              </div>
+              <span class="sync-pill ${cloud.pulling||cloud.syncing?'busy':'ok'}">${cloud.pulling? "sincronizando…" : cloud.syncing? "guardando…" : "al día"}</span>
+            </div>
+            <button class="btn btn-ghost" id="logoutBtn">Cerrar sesión</button>
+          ` : `
+            <div class="chip-row">
+              <button class="chip ${state.authMode==='login'?'active':''}" data-auth="login">Iniciar sesión</button>
+              <button class="chip ${state.authMode==='signup'?'active':''}" data-auth="signup">Crear cuenta</button>
+            </div>
+            <div class="auth-field">
+              <div class="field"><label>Correo</label><input type="text" id="authEmail" placeholder="tu@correo.com" value="${escapeHtml(state.authEmail)}"></div>
+              <div class="field"><label>Contraseña</label><input type="password" id="authPass" placeholder="Mínimo 6 caracteres" value="${escapeHtml(state.authPass)}"></div>
+              <button class="btn btn-primary" id="authSubmitBtn" ${state.authBusy?"disabled":""}>${state.authBusy? "Un momento…" : (state.authMode==='login'? "Iniciar sesión" : "Crear cuenta")}</button>
+            </div>
+          `}
+        </div>
+
+        <div class="card" style="display:flex;flex-direction:column;gap:10px">
+          <div>
+            <h3 class="section-title" style="font-size:15px;margin-bottom:2px">Clave de IA (Anthropic)</h3>
+            <p class="lede">Necesaria para el tutor, las tarjetas con IA, los resúmenes y las presentaciones. Se guarda solo en este dispositivo, nunca en la nube.</p>
+          </div>
+          <div class="field">
+            <input type="password" id="apiKeyInput" placeholder="sk-ant-..." value="${escapeHtml(state.apiKeyDraft)}">
+          </div>
+          <button class="btn btn-soft" id="saveKeyBtn">Guardar clave</button>
+        </div>
+      </div>
+    `;
+    $("#backFromSettings").onclick = ()=>{ state.tab = state.prevTab || "tutor"; render(); };
+    $("#apiKeyInput").oninput = e=> state.apiKeyDraft = e.target.value;
+    $("#saveKeyBtn").onclick = ()=>{
+      const v = state.apiKeyDraft.trim();
+      if(v){ localStorage.setItem("sinapsis.apiKeyOverride", v); toast("Clave guardada en este dispositivo."); }
+      else { localStorage.removeItem("sinapsis.apiKeyOverride"); toast("Se restauró la clave predeterminada."); }
+    };
+    if(cloudConfigured() && !loggedIn){
+      $$("[data-auth]").forEach(b=> b.onclick = ()=>{ state.authMode = b.dataset.auth; renderSettingsScreen(); });
+      $("#authEmail").oninput = e=> state.authEmail = e.target.value;
+      $("#authPass").oninput = e=> state.authPass = e.target.value;
+      $("#authSubmitBtn").onclick = async ()=>{
+        const email = state.authEmail.trim(), pass = state.authPass;
+        if(!email || !pass){ toast("Escribe correo y contraseña."); return; }
+        state.authBusy = true; renderSettingsScreen();
+        try{
+          if(state.authMode==="signup") await cloudSignUp(email, pass);
+          else await cloudLogIn(email, pass);
+          state.authPass = "";
+          toast(state.authMode==="signup" ? "Cuenta creada. Sincronizando…" : "Sesión iniciada. Sincronizando…");
+        }catch(e){ toast(authErrorCopy(e)); }
+        finally{ state.authBusy = false; renderSettingsScreen(); }
+      };
+    }
+    if(loggedIn) $("#logoutBtn").onclick = ()=>{ cloudLogOut(); toast("Sesión cerrada. Los datos siguen en este dispositivo."); renderSettingsScreen(); };
+  }
+
+  /* ---------- Home (saludo + comandos de voz) ---------- */
+  const TAB_LABELS = { tutor:"Tutor", cards:"Tarjetas", notes:"Apuntes", agenda:"Agenda", progress:"Progreso" };
+  const HOME_SHORTCUTS = [
+    { label:"Ir a mis tarjetas", cmd:"llévame a mis tarjetas" },
+    { label:"Ver mi agenda", cmd:"muéstrame la agenda" },
+    { label:"Nuevo recordatorio", cmd:"quiero agregar un recordatorio" },
+    { label:"Grabar una clase", cmd:"llévame a grabar una clase" },
+  ];
+
+  function firstName(){ const n = (state.profile.name||"").trim(); return n ? n.split(/\s+/)[0] : ""; }
+
+  function greetingLine(){
+    const h = new Date().getHours();
+    const parte = h<12 ? "Buenos días" : h<19 ? "Buenas tardes" : "Buenas noches";
+    const name = firstName();
+    return name ? `${parte}, ${escapeHtml(name)} 👋` : `${parte} 👋`;
+  }
+
+  function renderHomeScreen(){
+    const banner = agendaBannerHtml();
+    content.innerHTML = `
+      <div class="screen">
+        <div class="eyebrow">Sinapsis · ${escapeHtml(stageLabel())}</div>
+        <h2 class="section-title" style="font-size:24px">${greetingLine()}</h2>
+        ${!state.profile.name ? `
+          <div class="card" style="display:flex;gap:8px;align-items:flex-end">
+            <div class="field" style="flex:1"><label>¿Cómo te llamas?</label><input type="text" id="nameInput" placeholder="Tu nombre" value="${escapeHtml(state.nameDraft)}"></div>
+            <button class="btn btn-soft" id="saveNameBtn">Guardar</button>
+          </div>` : ""}
+        ${banner}
+        <p class="lede">Dime qué necesitas, por voz o por texto: "abre mis tarjetas", "agrega un parcial de anatomía el 12 de octubre", "resume esto que grabé"…</p>
+
+        <div class="card" style="display:flex;flex-direction:column;align-items:center;gap:12px;padding:22px 16px">
+          <button class="rec-circle ${state.homeListening?'active':''}" id="homeMicBtn" ${canListen?"":"disabled"} title="${canListen?'Hablar':'Este navegador no admite dictado por voz'}">
+            ${state.homeListening? "●" : "🎙️"}
+          </button>
+          <div class="rec-status">${state.homeBusy? "Pensando…" : state.homeListening? "Escuchando…" : canListen ? "Toca y habla" : "Escribe tu instrucción abajo"}</div>
+          <div class="composer" style="position:static;width:100%;padding-top:0">
+            <textarea id="homeCommandInput" rows="1" placeholder="O escribe aquí lo que necesitas…">${escapeHtml(state.homeCommand)}</textarea>
+            <button class="btn btn-primary btn-icon" id="homeSendBtn" ${state.homeBusy?"disabled":""}>➤</button>
+          </div>
+        </div>
+
+        <div class="eyebrow">Accesos rápidos</div>
+        <div class="chip-row">${HOME_SHORTCUTS.map(s=>`<button class="chip" data-cmd="${escapeHtml(s.cmd)}">${escapeHtml(s.label)}</button>`).join("")}</div>
+      </div>
+    `;
+    if(!state.profile.name){
+      $("#nameInput").oninput = e=> state.nameDraft = e.target.value;
+      $("#saveNameBtn").onclick = ()=>{
+        state.profile.name = state.nameDraft.trim();
+        saveProfile(); render();
+      };
+    }
+    $("#homeCommandInput").oninput = e=> state.homeCommand = e.target.value;
+    $("#homeCommandInput").addEventListener("keydown", e=>{
+      if(e.key==="Enter" && !e.shiftKey){ e.preventDefault(); $("#homeSendBtn").click(); }
+    });
+    $("#homeSendBtn").onclick = ()=>{
+      const v = $("#homeCommandInput").value.trim();
+      if(v) routeVoiceCommand(v);
+    };
+    $$("[data-cmd]").forEach(b=> b.onclick = ()=> routeVoiceCommand(b.dataset.cmd));
+    if(canListen){
+      $("#homeMicBtn").onclick = ()=>{
+        if(state.homeListening) return;
+        state.homeListening = true; render();
+        const rec = startDictation((text, isFinal)=>{
+          state.homeCommand = text;
+          const box = $("#homeCommandInput"); if(box) box.value = text;
+          if(isFinal){
+            state.homeListening = false;
+            if(text.trim()) routeVoiceCommand(text.trim()); else render();
+          }
+        });
+        if(!rec){ state.homeListening = false; render(); toast("No se pudo activar el micrófono."); }
+        setTimeout(()=>{ if(state.homeListening){ state.homeListening=false; render(); } }, 12000);
+      };
+    }
+  }
+
+  async function routeVoiceCommand(text){
+    state.homeCommand = text; state.homeBusy = true; render();
+    try{
+      const prompt = `Eres el enrutador de comandos de la app de estudio Sinapsis. Interpreta la instrucción de la estudiante y responde SOLO con un objeto JSON (sin texto adicional) con una de estas formas exactas:
+{"action":"open_tab","tab":"tutor"|"cards"|"notes"|"agenda"|"progress"}
+{"action":"add_reminder","title":"...","type":"Parcial"|"Entrega"|"Trabajo","date":"YYYY-MM-DD","subject":"..."}
+{"action":"add_class","day":"Lunes"|"Martes"|"Miércoles"|"Jueves"|"Viernes"|"Sábado"|"Domingo","time":"HH:MM","subject":"...","place":"..."}
+{"action":"ask_tutor","question":"..."}
+{"action":"generate_deck","topic":"..."}
+{"action":"unknown"}
+Reglas: la fecha de hoy es ${todayStr()} (formato YYYY-MM-DD); calcula fechas relativas ("mañana", "el viernes", "en dos semanas") a partir de hoy. Si falta un dato opcional (subject, place), usa "". Si la instrucción es una pregunta de contenido médico/académico, usa "ask_tutor". Si pide crear tarjetas o un mazo de estudio, usa "generate_deck". Si no encaja en ninguna acción, usa "unknown".
+Instrucción: "${text}"`;
+      const data = await callClaudeJSON(prompt, { model: MODEL_QUICK, maxTokens:300 });
+      await runHomeAction(data);
+    }catch(e){ toast(errorCopy(e)); }
+    finally{ state.homeBusy = false; state.homeCommand = ""; if(state.tab==="home") render(); }
+  }
+
+  async function runHomeAction(data){
+    const action = data && data.action;
+    if(action==="open_tab" && TAB_LABELS[data.tab]){
+      state.tab = data.tab; render();
+    } else if(action==="add_reminder"){
+      state.remForm = {
+        title: data.title||"", type: REM_TYPES.includes(data.type)? data.type : "Parcial",
+        date: /^\d{4}-\d{2}-\d{2}$/.test(data.date||"") ? data.date : "", subject: data.subject||"",
+      };
+      state.tab = "addReminder"; render();
+      toast("Revisa los datos y guarda el recordatorio.");
+    } else if(action==="add_class"){
+      state.schedForm = {
+        day: DAYS.includes(data.day)? data.day : "Lunes",
+        time: /^\d{2}:\d{2}$/.test(data.time||"") ? data.time : "",
+        subject: data.subject||"", place: data.place||"",
+      };
+      state.tab = "addClass"; render();
+      toast("Revisa los datos y guarda la clase.");
+    } else if(action==="ask_tutor" && data.question){
+      state.tab = "tutor"; render();
+      askTutor(data.question);
+    } else if(action==="generate_deck" && data.topic){
+      state.tab = "cards"; render();
+      generateDeck(data.topic);
+    } else {
+      toast("No entendí bien esa instrucción — puedes intentarlo de otra forma o usar los accesos rápidos.");
+    }
   }
 
   /* ---------- Tutor ---------- */
@@ -872,7 +1425,7 @@ Responde SOLO con JSON: {"title":"...", "slides":[{"title":"...","bullets":["...
         </div>
         <button class="btn btn-primary" id="reviewBtn" ${due.length? "" : "disabled"}>${due.length? `Repasar ${due.length} tarjeta${due.length===1?"":"s"}` : "No hay tarjetas pendientes"}</button>
 
-        <div class="section-head"><h2 class="section-title">Tus mazos</h2></div>
+        <div class="section-head"><h2 class="section-title">Flashcards</h2></div>
         <div style="display:flex;flex-direction:column;gap:10px" id="deckList">
           ${state.decks.length ? state.decks.map(deckRow).join("") : `<div class="empty-note">Todavía no tienes mazos. Genera el primero abajo ↓</div>`}
         </div>
@@ -895,13 +1448,13 @@ Responde SOLO con JSON: {"title":"...", "slides":[{"title":"...","bullets":["...
       const topic = $("#topicInput").value.trim();
       if(topic) generateDeck(topic); else toast("Escribe o elige un tema primero.");
     };
-    $$(".pptx-deck-btn").forEach(b=> b.onclick = (e)=>{
+    $$(".export-deck-btn").forEach(b=> b.onclick = (e)=>{
       e.stopPropagation();
       const deck = state.decks.find(d=>d.id===b.dataset.id);
       if(!deck) return;
       const cards = state.cards.filter(c=>c.deckId===deck.id);
       const material = cards.map(c=>`P: ${c.front}\nR: ${c.back}`).join("\n\n");
-      generatePresentation(deck.name, material);
+      openExportMenu(deck.name, material);
     });
   }
 
@@ -916,7 +1469,7 @@ Responde SOLO con JSON: {"title":"...", "slides":[{"title":"...","bullets":["...
       </div>
       <div class="deck-actions">
         <div class="due-pill ${due? "" : "zero"}">${due? due+" hoy" : "al día"}</div>
-        <button class="icon-link pptx-deck-btn" data-id="${deck.id}">📊 Presentación</button>
+        <button class="icon-link export-deck-btn" data-id="${deck.id}">📤 Exportar</button>
       </div>
     </div>`;
   }
@@ -1007,7 +1560,7 @@ Responde SOLO con JSON: {"title":"...", "slides":[{"title":"...","bullets":["...
       body.style.display = body.style.display==="none" ? "flex" : "none";
     });
     $$(".mk-cards-note").forEach(b=> b.onclick = (e)=>{ e.stopPropagation(); const note = state.notes.find(n=>n.id===b.dataset.id); if(note) cardsFromNote(note); });
-    $$(".mk-pptx-note").forEach(b=> b.onclick = (e)=>{ e.stopPropagation(); const note = state.notes.find(n=>n.id===b.dataset.id); if(note) generatePresentation(note.title, note.summary + "\n" + (note.terms||[]).map(t=>t.term+": "+t.definition).join("\n")); });
+    $$(".mk-export-note").forEach(b=> b.onclick = (e)=>{ e.stopPropagation(); const note = state.notes.find(n=>n.id===b.dataset.id); if(note) openExportMenu(note.title, note.summary + "\n" + (note.terms||[]).map(t=>t.term+": "+t.definition).join("\n")); });
   }
 
   function renderModeArea(){
@@ -1091,7 +1644,7 @@ Responde SOLO con JSON: {"title":"...", "slides":[{"title":"...","bullets":["...
         <div class="chip-row">${(note.terms||[]).map(t=>`<div class="term-chip"><b>${escapeHtml(t.term)}</b>${escapeHtml(t.definition)}</div>`).join("")}</div>
         <div class="note-btn-row">
           <button class="btn btn-soft btn-sm mk-cards-note" data-id="${note.id}">🗂️ Tarjetas</button>
-          <button class="btn btn-soft btn-sm mk-pptx-note" data-id="${note.id}">📊 Presentación</button>
+          <button class="btn btn-soft btn-sm mk-export-note" data-id="${note.id}">📤 Exportar</button>
         </div>
       </div>
     </div>`;
@@ -1105,22 +1658,18 @@ Responde SOLO con JSON: {"title":"...", "slides":[{"title":"...","bullets":["...
         <h2 class="section-title">Horario y recordatorios</h2>
         ${agendaBannerHtml() || `<p class="lede">Nada urgente por ahora — agrega tu horario y tus próximos parciales o entregas abajo.</p>`}
 
-        <div class="section-head"><h2 class="section-title" style="font-size:16px">Recordatorios</h2></div>
+        <div class="section-head">
+          <h2 class="section-title" style="font-size:16px">Recordatorios</h2>
+          <button class="btn btn-eosin btn-sm" id="goAddRem">+ Nuevo</button>
+        </div>
         <div style="display:flex;flex-direction:column;gap:8px" id="remList">
           ${remindersSorted().length ? remindersSorted().map(reminderItem).join("") : `<div class="empty-note">Sin parciales, entregas o trabajos guardados.</div>`}
         </div>
-        <div class="card" style="display:flex;flex-direction:column;gap:10px">
-          <div class="eyebrow">Nuevo recordatorio</div>
-          <div class="field-row">
-            <div class="field"><label>Tipo</label><select id="remType">${REM_TYPES.map(t=>`<option ${state.remForm.type===t?"selected":""}>${t}</option>`).join("")}</select></div>
-            <div class="field"><label>Fecha</label><input type="date" id="remDate" value="${state.remForm.date}"></div>
-          </div>
-          <div class="field"><label>Título</label><input type="text" id="remTitle" placeholder="Ej. Parcial de Bioquímica — corte 1" value="${escapeHtml(state.remForm.title)}"></div>
-          <div class="field"><label>Materia (opcional)</label><input type="text" id="remSubject" placeholder="Ej. Bioquímica" value="${escapeHtml(state.remForm.subject)}"></div>
-          <button class="btn btn-eosin" id="addRemBtn">Agregar recordatorio</button>
-        </div>
 
-        <div class="section-head"><h2 class="section-title" style="font-size:16px">Horario semanal</h2></div>
+        <div class="section-head">
+          <h2 class="section-title" style="font-size:16px">Horario semanal</h2>
+          <button class="btn btn-eosin btn-sm" id="goAddClass">+ Nueva</button>
+        </div>
         <div style="display:flex;flex-direction:column;gap:14px" id="schedList">
           ${DAYS.map(day=>{
             const items = state.schedule.filter(s=>s.day===day).sort((a,b)=>a.time.localeCompare(b.time));
@@ -1128,36 +1677,85 @@ Responde SOLO con JSON: {"title":"...", "slides":[{"title":"...","bullets":["...
             return `<div class="day-group"><div class="day-label">${day}</div>${items.map(schedItem).join("")}</div>`;
           }).join("") || `<div class="empty-note">Aún no has cargado tu horario.</div>`}
         </div>
+      </div>
+    `;
+    $("#goAddRem").onclick = ()=>{ state.tab = "addReminder"; render(); };
+    $("#goAddClass").onclick = ()=>{ state.tab = "addClass"; render(); };
+    $$(".del-rem").forEach(b=> b.onclick = ()=>{ state.reminders = state.reminders.filter(r=>r.id!==b.dataset.id); saveReminders(); render(); });
+    $$(".del-sched").forEach(b=> b.onclick = ()=>{ state.schedule = state.schedule.filter(s=>s.id!==b.dataset.id); saveSchedule(); render(); });
+  }
+
+  /* ---------- Agenda: pantallas de alta independientes ----------
+     Al agregar una fecha, se abre esta pantalla dedicada para completarla y
+     guardarla; al guardar (o volver), regresa directo a la Agenda. */
+  function renderAddReminderScreen(){
+    content.innerHTML = `
+      <div class="screen">
+        <div class="section-head">
+          <div><div class="eyebrow">Agenda</div><h2 class="section-title">Nuevo recordatorio</h2></div>
+          <button class="btn btn-ghost btn-sm" id="backToAgenda1">← Volver</button>
+        </div>
         <div class="card" style="display:flex;flex-direction:column;gap:10px">
-          <div class="eyebrow">Nueva clase</div>
           <div class="field-row">
-            <div class="field"><label>Día</label><select id="schedDay">${DAYS.map(d=>`<option ${state.schedForm.day===d?"selected":""}>${d}</option>`).join("")}</select></div>
-            <div class="field"><label>Hora</label><input type="time" id="schedTime" value="${state.schedForm.time}"></div>
+            <div class="field"><label>Tipo</label><select id="remType">${REM_TYPES.map(t=>`<option ${state.remForm.type===t?"selected":""}>${t}</option>`).join("")}</select></div>
+            <div class="field"><label>Fecha</label><input type="date" id="remDate" value="${state.remForm.date}"></div>
           </div>
-          <div class="field"><label>Materia</label><input type="text" id="schedSubject" placeholder="Ej. Anatomía" value="${escapeHtml(state.schedForm.subject)}"></div>
-          <div class="field"><label>Lugar (opcional)</label><input type="text" id="schedPlace" placeholder="Ej. Aula 302" value="${escapeHtml(state.schedForm.place)}"></div>
-          <button class="btn btn-eosin" id="addSchedBtn">Agregar a horario</button>
+          <div class="field"><label>Título</label><input type="text" id="remTitle" placeholder="Ej. Parcial de Bioquímica — corte 1" value="${escapeHtml(state.remForm.title)}"></div>
+          <div class="field"><label>Materia (opcional)</label><input type="text" id="remSubject" placeholder="Ej. Bioquímica" value="${escapeHtml(state.remForm.subject)}"></div>
+          <button class="btn btn-primary" id="addRemBtn">Guardar recordatorio</button>
         </div>
       </div>
     `;
+    const back = ()=>{ state.tab = "agenda"; render(); };
+    $("#backToAgenda1").onclick = back;
+    $("#remType").onchange = e=> state.remForm.type = e.target.value;
+    $("#remDate").oninput = e=> state.remForm.date = e.target.value;
+    $("#remTitle").oninput = e=> state.remForm.title = e.target.value;
+    $("#remSubject").oninput = e=> state.remForm.subject = e.target.value;
     $("#addRemBtn").onclick = ()=>{
       const title = $("#remTitle").value.trim(), date = $("#remDate").value;
       if(!title || !date){ toast("Falta el título o la fecha."); return; }
       const entry = { id:"r"+Math.random().toString(36).slice(2,10), title, date, type:$("#remType").value, subject:$("#remSubject").value.trim() };
       state.reminders.push(entry); saveReminders();
       state.remForm = { title:"", type:"Parcial", date:"", subject:"" };
-      render();
+      toast("Recordatorio guardado.");
+      back();
     };
+  }
+
+  function renderAddClassScreen(){
+    content.innerHTML = `
+      <div class="screen">
+        <div class="section-head">
+          <div><div class="eyebrow">Agenda</div><h2 class="section-title">Nueva clase</h2></div>
+          <button class="btn btn-ghost btn-sm" id="backToAgenda2">← Volver</button>
+        </div>
+        <div class="card" style="display:flex;flex-direction:column;gap:10px">
+          <div class="field-row">
+            <div class="field"><label>Día</label><select id="schedDay">${DAYS.map(d=>`<option ${state.schedForm.day===d?"selected":""}>${d}</option>`).join("")}</select></div>
+            <div class="field"><label>Hora</label><input type="time" id="schedTime" value="${state.schedForm.time}"></div>
+          </div>
+          <div class="field"><label>Materia</label><input type="text" id="schedSubject" placeholder="Ej. Anatomía" value="${escapeHtml(state.schedForm.subject)}"></div>
+          <div class="field"><label>Lugar (opcional)</label><input type="text" id="schedPlace" placeholder="Ej. Aula 302" value="${escapeHtml(state.schedForm.place)}"></div>
+          <button class="btn btn-primary" id="addSchedBtn">Guardar en el horario</button>
+        </div>
+      </div>
+    `;
+    const back = ()=>{ state.tab = "agenda"; render(); };
+    $("#backToAgenda2").onclick = back;
+    $("#schedDay").onchange = e=> state.schedForm.day = e.target.value;
+    $("#schedTime").oninput = e=> state.schedForm.time = e.target.value;
+    $("#schedSubject").oninput = e=> state.schedForm.subject = e.target.value;
+    $("#schedPlace").oninput = e=> state.schedForm.place = e.target.value;
     $("#addSchedBtn").onclick = ()=>{
       const time = $("#schedTime").value, subject = $("#schedSubject").value.trim();
       if(!time || !subject){ toast("Falta la hora o la materia."); return; }
       const entry = { id:"s"+Math.random().toString(36).slice(2,10), day:$("#schedDay").value, time, subject, place:$("#schedPlace").value.trim() };
       state.schedule.push(entry); saveSchedule();
       state.schedForm = { day:$("#schedDay").value, time:"", subject:"", place:"" };
-      render();
+      toast("Clase agregada al horario.");
+      back();
     };
-    $$(".del-rem").forEach(b=> b.onclick = ()=>{ state.reminders = state.reminders.filter(r=>r.id!==b.dataset.id); saveReminders(); render(); });
-    $$(".del-sched").forEach(b=> b.onclick = ()=>{ state.schedule = state.schedule.filter(s=>s.id!==b.dataset.id); saveSchedule(); render(); });
   }
 
   function reminderItem(r){
@@ -1205,13 +1803,7 @@ Responde SOLO con JSON: {"title":"...", "slides":[{"title":"...","bullets":["...
             <button class="btn btn-soft btn-sm" id="saveStageBtn">Guardar</button>
           </div>
           <p class="lede">Esto ajusta el nivel del tutor, las tarjetas y los resúmenes. Actualízalo cuando avances.</p>
-          <details class="adv">
-            <summary>Clave de IA (avanzado)</summary>
-            <div class="field" style="margin-top:6px">
-              <input type="password" id="apiKeyInput" placeholder="Solo si el tutor deja de funcionar (sk-ant-...)" value="${escapeHtml(state.apiKeyDraft)}">
-            </div>
-            <button class="btn btn-soft btn-sm" id="saveKeyBtn" style="margin-top:8px">Guardar clave</button>
-          </details>
+          <button class="btn btn-ghost btn-sm" id="openSettingsFromProgress" style="width:fit-content">⚙️ Cuenta y clave de IA</button>
         </div>
 
         <div class="stat-row">
@@ -1236,19 +1828,14 @@ Responde SOLO con JSON: {"title":"...", "slides":[{"title":"...","bullets":["...
       toast("Etapa actualizada.");
       render();
     };
-    $("#apiKeyInput").oninput = e=> state.apiKeyDraft = e.target.value;
-    $("#saveKeyBtn").onclick = ()=>{
-      const v = state.apiKeyDraft.trim();
-      if(v){ localStorage.setItem("sinapsis.apiKeyOverride", v); toast("Clave guardada en este dispositivo."); }
-      else { localStorage.removeItem("sinapsis.apiKeyOverride"); toast("Se restauró la clave predeterminada."); }
-    };
-    $$(".pptx-deck-btn").forEach(b=> b.onclick = (e)=>{
+    $("#openSettingsFromProgress").onclick = openSettings;
+    $$(".export-deck-btn").forEach(b=> b.onclick = (e)=>{
       e.stopPropagation();
       const deck = state.decks.find(d=>d.id===b.dataset.id);
       if(!deck) return;
       const cards = state.cards.filter(c=>c.deckId===deck.id);
       const material = cards.map(c=>`P: ${c.front}\nR: ${c.back}`).join("\n\n");
-      generatePresentation(deck.name, material);
+      openExportMenu(deck.name, material);
     });
   }
 
@@ -1260,6 +1847,9 @@ Responde SOLO con JSON: {"title":"...", "slides":[{"title":"...","bullets":["...
       render();
     });
   });
+  $("#settingsBtn").addEventListener("click", openSettings);
+  $("#syncFlagBtn").addEventListener("click", openSettings);
+  $("#homeBtn").addEventListener("click", ()=>{ state.tab = "home"; state.review.active=false; render(); });
 
   if("serviceWorker" in navigator){
     window.addEventListener("load", ()=>{ navigator.serviceWorker.register("sw.js").catch(()=>{}); });
@@ -1267,6 +1857,13 @@ Responde SOLO con JSON: {"title":"...", "slides":[{"title":"...","bullets":["...
 
   loadAll();
   render();
+  // Deferred so the very first paint (greeting screen) never waits on the
+  // Firebase SDK — cloud sync quietly connects in the background afterward.
+  if(cloudConfigured()){
+    const kickoff = ()=>initCloud();
+    if("requestIdleCallback" in window) requestIdleCallback(kickoff, { timeout:2000 });
+    else setTimeout(kickoff, 300);
+  }
 })();
 </script>
 </body>
