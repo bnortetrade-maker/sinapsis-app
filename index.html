@@ -611,6 +611,7 @@ if("serviceWorker" in navigator){
     profile: { stage: "Primer semestre", name:"", autoSpeak:true, topics:[] }, stageDraft:"", nameDraft:"",
     stats: { streakDays:0, lastStudyDate:null, totalReviews:0, correctReviews:0, daily:{} },
     review: { active:false, queue:[], idx:0, flipped:false },
+    deckDetail: null, deckDetailSelected: [],
     genTopic:"", genBusy:false, genCount:15,
     notesMode:"write", notesBusy:false, notesDraftTitle:"", notesDraftText:"",
     // "live" = solo transcripción por voz (SpeechRecognition), "audio" = solo grabar el audio (MediaRecorder).
@@ -842,12 +843,19 @@ if("serviceWorker" in navigator){
   function pickBestSpanishVoice(){
     const voices = cachedVoices.length ? cachedVoices : (canSpeak ? window.speechSynthesis.getVoices() : []);
     if(!voices.length) return null;
-    const byName = (needle)=> voices.find(v=> v.lang.toLowerCase().includes("es") && v.name.toLowerCase().includes(needle));
-    return voices.find(v=> v.lang.toLowerCase()==="es-ar")
-      || byName("argentin")
-      || byName("latina") || byName("latino")
-      || voices.find(v=> v.lang.toLowerCase().startsWith("es") && /natural|neural|premium|enhanced/i.test(v.name))
-      || voices.find(v=> v.lang.toLowerCase().startsWith("es"))
+    const isEs = v=> v.lang.toLowerCase().startsWith("es");
+    const byName = (needle)=> voices.find(v=> isEs(v) && v.name.toLowerCase().includes(needle));
+    // Las voces "Google" (Chrome/Android) suenan bastante más naturales que
+    // la voz local por defecto del sistema, que suele sonar como anuncio de
+    // aeropuerto/GPS ("muy instructiva"). Se prioriza esa calidad por sobre
+    // solo coincidir el dialecto exacto.
+    const googleArLatino = voices.find(v=> isEs(v) && v.name.toLowerCase().includes("google") && /argentin|latin/i.test(v.name));
+    return googleArLatino
+      || voices.find(v=> v.lang.toLowerCase()==="es-ar")
+      || byName("argentin") || byName("latina") || byName("latino")
+      || voices.find(v=> isEs(v) && v.name.toLowerCase().includes("google"))
+      || voices.find(v=> isEs(v) && /natural|neural|premium|enhanced/i.test(v.name))
+      || voices.find(v=> isEs(v))
       || null;
   }
 
@@ -1242,12 +1250,20 @@ Responde SOLO con JSON, en español, sin texto adicional:
     try{
       return await callClaudeJSON(prompt, { maxTokens:5000, tools:[WEB_SEARCH_TOOL] });
     }catch(e){
-      // Si esta clave/cuenta no tiene habilitada la búsqueda en internet, se
-      // reintenta sin ella en vez de dejar el documento sin generar.
-      if(e && (e.code==="invalid_request_error" || e.code==="permission_error")){
-        return callClaudeJSON(prompt, { maxTokens:5000 });
+      console.error("getStudyOutline con búsqueda web falló, reintentando sin ella:", e);
+      // ANTES solo reintentaba sin la herramienta si el error era exactamente
+      // "invalid_request_error" o "permission_error" — cualquier otro fallo
+      // (red, JSON mal formado en la respuesta con citas de búsqueda,
+      // sobrecarga del servidor, etc.) hacía fallar TODO el documento sin
+      // generar nada. Ahora se reintenta sin búsqueda ante cualquier error,
+      // porque la búsqueda web es una mejora, no un requisito para generar
+      // el documento.
+      try{
+        return await callClaudeJSON(prompt, { maxTokens:5000 });
+      }catch(e2){
+        console.error("getStudyOutline también falló sin búsqueda web:", e2);
+        throw e2;
       }
-      throw e;
     }
   }
 
@@ -2124,6 +2140,7 @@ No das diagnósticos sobre personas reales. Respondé siempre en español, con e
   /* ---------- Cards ---------- */
   function renderCardsScreen(){
     if(state.review.active) return renderReview();
+    if(state.deckDetail) return renderDeckDetailScreen();
     const due = dueCards();
     content.innerHTML = `
       <div class="screen">
@@ -2172,22 +2189,84 @@ No das diagnósticos sobre personas reales. Respondé siempre en español, con e
       const material = cards.map(c=>`P: ${c.front}\nR: ${c.back}`).join("\n\n");
       openExportMenu(deck.name, material);
     });
+    $$("[data-open-deck]").forEach(el=> el.onclick = ()=>{ state.tab="cards"; openDeckDetail(el.dataset.openDeck); });
   }
 
   function deckRow(deck){
     const cards = state.cards.filter(c=>c.deckId===deck.id);
     const due = cards.filter(c=>c.dueAt<=new Date().toISOString()).length;
-    return `<div class="deck-item">
+    return `<div class="deck-item deck-item-click" data-open-deck="${deck.id}" style="cursor:pointer">
       <div class="deck-swatch" style="background:${deck.example? 'var(--sage)':'var(--hema)'}"></div>
       <div class="deck-info">
         <div class="deck-name">${escapeHtml(deck.name)}${deck.example? ' <span class="mono" style="font-size:10px;color:var(--ink-faint)">EJEMPLO</span>':''}</div>
-        <div class="deck-meta">${cards.length} tarjeta${cards.length===1?"":"s"} · ${escapeHtml(deck.topic||"")}</div>
+        <div class="deck-meta">${cards.length} tarjeta${cards.length===1?"":"s"} · ${escapeHtml(deck.topic||"")} · toca para gestionar</div>
       </div>
       <div class="deck-actions">
         <div class="due-pill ${due? "" : "zero"}">${due? due+" hoy" : "al día"}</div>
         <button class="icon-link export-deck-btn" data-id="${deck.id}">📤 Exportar</button>
       </div>
     </div>`;
+  }
+
+  function openDeckDetail(deckId){
+    state.deckDetail = deckId;
+    state.deckDetailSelected = [];
+    render();
+  }
+
+  function renderDeckDetailScreen(){
+    const deck = state.decks.find(d=>d.id===state.deckDetail);
+    if(!deck){ state.deckDetail = null; return renderCardsScreen(); }
+    const cards = state.cards.filter(c=>c.deckId===deck.id);
+    const selected = state.deckDetailSelected;
+    const allSelected = cards.length>0 && selected.length===cards.length;
+    content.innerHTML = `
+      <div class="screen">
+        <div class="section-head">
+          <button class="icon-link" id="backToDecksBtn">← Volver a Flashcards</button>
+        </div>
+        <h2 class="section-title" style="font-size:20px">${escapeHtml(deck.name)}</h2>
+        <p class="lede">${cards.length} tarjeta${cards.length===1?"":"s"} · Selecciona las que quieras borrar</p>
+        <div style="display:flex;gap:8px;align-items:center">
+          <button class="btn btn-soft btn-sm" id="selectAllCardsBtn">${allSelected? "Deseleccionar todas":"Seleccionar todas"}</button>
+          <button class="btn btn-eosin btn-sm" id="deleteSelectedCardsBtn" ${selected.length? "":"disabled"}>🗑️ Borrar seleccionadas (${selected.length})</button>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px">
+          ${cards.length ? cards.map(c=>`
+            <label class="card-select-item" style="display:flex;gap:10px;align-items:flex-start;padding:12px;border:1px solid var(--line);border-radius:var(--radius-m);background:var(--surface);cursor:pointer">
+              <input type="checkbox" class="card-select-check" data-card-id="${c.id}" ${selected.includes(c.id)?"checked":""} style="margin-top:3px">
+              <div style="flex:1;min-width:0">
+                <div style="font-weight:600;font-size:13.5px">${escapeHtml(c.front)}</div>
+                <div style="font-size:12.5px;color:var(--ink-soft);margin-top:3px">${escapeHtml(c.back)}</div>
+              </div>
+            </label>
+          `).join("") : `<div class="empty-note">Este mazo no tiene tarjetas.</div>`}
+        </div>
+      </div>
+    `;
+    $("#backToDecksBtn").onclick = ()=>{ state.deckDetail = null; render(); };
+    $("#selectAllCardsBtn").onclick = ()=>{
+      state.deckDetailSelected = allSelected ? [] : cards.map(c=>c.id);
+      renderDeckDetailScreen();
+    };
+    $("#deleteSelectedCardsBtn").onclick = ()=>{
+      const n = selected.length;
+      selected.forEach(id=> deleteCard(id));
+      state.deckDetailSelected = [];
+      toast(`${n} tarjeta${n===1?"":"s"} borrada${n===1?"":"s"}`);
+      renderDeckDetailScreen();
+    };
+    $$(".card-select-check").forEach(chk=>{
+      chk.onchange = ()=>{
+        const id = chk.dataset.cardId;
+        if(chk.checked){ if(!state.deckDetailSelected.includes(id)) state.deckDetailSelected.push(id); }
+        else { state.deckDetailSelected = state.deckDetailSelected.filter(x=>x!==id); }
+        // Solo actualizar los botones de arriba, sin perder el foco del checkbox
+        const delBtn = $("#deleteSelectedCardsBtn");
+        delBtn.textContent = `🗑️ Borrar seleccionadas (${state.deckDetailSelected.length})`;
+        delBtn.disabled = state.deckDetailSelected.length===0;
+      };
+    });
   }
 
   function startReview(){
@@ -2595,6 +2674,7 @@ No das diagnósticos sobre personas reales. Respondé siempre en español, con e
       const material = cards.map(c=>`P: ${c.front}\nR: ${c.back}`).join("\n\n");
       openExportMenu(deck.name, material);
     });
+    $$("[data-open-deck]").forEach(el=> el.onclick = ()=>{ state.tab="cards"; openDeckDetail(el.dataset.openDeck); });
   }
 
   /* ---------- tabs & boot ---------- */
