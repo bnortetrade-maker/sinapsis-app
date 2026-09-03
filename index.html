@@ -718,12 +718,25 @@ if("serviceWorker" in navigator){
     state.decks.push(deck); cards.forEach(c=>state.cards.push(c));
     lsSet(LS.decks, state.decks); lsSet(LS.cards, state.cards); queueCloudSync();
   }
+  function deleteDeck(deckId){
+    state.decks = state.decks.filter(d=>d.id!==deckId);
+    state.cards = state.cards.filter(c=>c.deckId!==deckId);
+    lsSet(LS.decks, state.decks); lsSet(LS.cards, state.cards);
+    toast("Mazo borrado");
+    queueCloudSync();
+  }
   function saveCard(card){
     const idx = state.cards.findIndex(c=>c.id===card.id);
     if(idx>-1) state.cards[idx] = card; else state.cards.push(card);
     lsSet(LS.cards, state.cards); queueCloudSync();
   }
   function saveNote(note){ state.notes.unshift(note); lsSet(LS.notes, state.notes); queueCloudSync(); }
+  function deleteNote(noteId){
+    state.notes = state.notes.filter(n=>n.id!==noteId);
+    lsSet(LS.notes, state.notes);
+    toast("Apunte borrado");
+    queueCloudSync();
+  }
   function saveStats(){ lsSet(LS.stats, state.stats); queueCloudSync(); }
   function saveChat(){ lsSet(LS.chat, state.chat.slice(-40)); queueCloudSync(); }
   function saveProfile(){ lsSet(LS.profile, state.profile); queueCloudSync(); }
@@ -949,13 +962,32 @@ if("serviceWorker" in navigator){
     };
   }
 
-  function browserSave(filename, data){
+  async function browserSave(filename, data){
     const blob = data instanceof Blob ? data : new Blob([data], { type: filename.endsWith(".md") ? "text/markdown" : "application/octet-stream" });
+
+    // En una PWA instalada (display:standalone, como Sinapsis), Android no
+    // muestra ninguna confirmación visible cuando un <a download> termina —
+    // el archivo SÍ se guarda en Descargas, pero en silencio, y por eso
+    // parece que "no pasa nada". El diálogo nativo de Compartir/Guardar sí
+    // muestra confirmación clara y deja elegir dónde guardarlo, así que se
+    // intenta primero. Si el navegador no lo soporta, o el permiso ya
+    // expiró (pasaron varios segundos generando el documento), se cae al
+    // método de siempre — y en ambos casos se avisa bien claro dónde quedó.
+    try{
+      const file = new File([blob], filename, { type: blob.type });
+      if(navigator.canShare && navigator.canShare({ files:[file] })){
+        await navigator.share({ files:[file], title: filename });
+        toast(`✅ "${filename}" guardado/compartido.`);
+        return;
+      }
+    }catch(e){ /* usuario canceló el diálogo, o no hay gesto de usuario activo — cae al método de descarga normal */ }
+
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url; a.download = filename;
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(()=>URL.revokeObjectURL(url), 4000);
+    toast(`✅ "${filename}" guardado en tu carpeta Descargas.`);
   }
 
   function addGeneratedFile(filename, blob, type){
@@ -1013,16 +1045,17 @@ Responde SOLO con un array JSON de ${n} objetos: [{"front":"...","back":"..."}, 
   // activada — así el módulo de voz contesta hablando, no solo con texto.
 
 
-  async function turnAnswerIntoCards(answerText, topicHint){
+  async function turnAnswerIntoCards(answerText, topicHint, count){
+    const n = [5,10,15,20].includes(+count) ? +count : 5;
     toast("Generando tarjetas de esta respuesta…");
     try{
-      const prompt = `A partir de este texto de estudio para una estudiante de medicina (etapa: ${stageLabel()}), crea hasta 5 tarjetas de repaso en español.
+      const prompt = `A partir de este texto de estudio para una estudiante de medicina (etapa: ${stageLabel()}), crea hasta ${n} tarjetas de repaso en español.
 Texto:\n"""${answerText.slice(0,3000)}"""\nResponde SOLO con un array JSON: [{"front":"...","back":"..."}, ...]`;
-      const arr = await callClaudeJSON(prompt, { model: MODEL_QUICK, maxTokens:900 });
+      const arr = await callClaudeJSON(prompt, { model: MODEL_QUICK, maxTokens: Math.round(n*130) });
       if(!Array.isArray(arr) || !arr.length) throw {code:"invalid_json"};
       const deckId = "d"+Math.random().toString(36).slice(2,10);
       const deck = { id:deckId, name: topicHint || "Del tutor", topic: topicHint || "Tutor", createdAt: Date.now() };
-      const cards = arr.slice(0,5).map(c=>mkCard(deckId, String(c.front||"").trim(), String(c.back||"").trim(), true));
+      const cards = arr.slice(0,n).map(c=>mkCard(deckId, String(c.front||"").trim(), String(c.back||"").trim(), true));
       saveDeckAndCards(deck, cards);
       toast(`Tarjetas añadidas a "${deck.name}".`);
       if(state.tab==="cards") render();
@@ -1625,8 +1658,9 @@ Responde SOLO con JSON, en español, sin texto adicional:
       files.push({name: notasFilename, blob: notasBlob});
     }catch(e){ console.error("Error en Notas:", e); }
 
-    // Descargar archivos
-    files.forEach(f=> browserSave(f.name, f.blob));
+    // Descargar archivos uno por uno (en serie, no en paralelo) — el diálogo
+    // nativo de compartir/guardar no admite abrir varios a la vez.
+    for(const f of files){ await browserSave(f.name, f.blob); }
     toast(`✅ ${files.length} archivo${files.length===1?"":"s"} generado${files.length===1?"":"s"}: PPT, Word y Notas`);
   }
 
@@ -1885,12 +1919,21 @@ No das diagnósticos sobre personas reales. Respondé siempre en español, con e
     // Botón de generar tarjetas
     $$(".make-cards-home-btn", log).forEach(b=>{
       b.onclick = ()=>{
-        const msg = state.homeChat[+b.dataset.i];
-        if(msg){
-          const topic = msg.content.split("\n")[0].slice(0,50);
-          toast(`🃏 Generando ${state.genCount} tarjetas de "${topic}"…`);
-          generateDeck(topic, state.genCount);
-        }
+        const i = +b.dataset.i;
+        const msg = state.homeChat[i];
+        if(!msg) return;
+        // Antes usaba la primera línea de la RESPUESTA de Sinapsis como
+        // "tema" y llamaba a generateDeck() — que investiga ese tema desde
+        // cero en vez de usar la respuesta como material. Si la respuesta
+        // era algo como "Listo, te estoy generando el PowerPoint..." o un
+        // error, ESO terminaba siendo el nombre del mazo (bug real visto
+        // en captura). Ahora se usa turnAnswerIntoCards(): la respuesta se
+        // usa como material de estudio real, y el título sale de la
+        // PREGUNTA del usuario que la originó, no de la respuesta.
+        const userMsg = i>0 ? state.homeChat[i-1] : null;
+        const topicHint = (userMsg && userMsg.role==="user" ? userMsg.content : msg.content).replace(/\s+/g," ").trim().slice(0,50) || "Del chat con Sinapsis";
+        toast(`🃏 Generando ${state.genCount} tarjetas de "${topicHint}"…`);
+        turnAnswerIntoCards(msg.content, topicHint, state.genCount);
       };
     });
     // Botón de exportar
@@ -2222,11 +2265,12 @@ No das diagnósticos sobre personas reales. Respondé siempre en español, con e
     const allSelected = cards.length>0 && selected.length===cards.length;
     content.innerHTML = `
       <div class="screen">
-        <div class="section-head">
+        <div class="section-head" style="justify-content:space-between">
           <button class="icon-link" id="backToDecksBtn">← Volver a Flashcards</button>
+          <button class="icon-link" id="deleteWholeDeckBtn" style="color:var(--eosin)">🗑️ Borrar mazo completo</button>
         </div>
         <h2 class="section-title" style="font-size:20px">${escapeHtml(deck.name)}</h2>
-        <p class="lede">${cards.length} tarjeta${cards.length===1?"":"s"} · Selecciona las que quieras borrar</p>
+        <p class="lede">${cards.length} tarjeta${cards.length===1?"":"s"} · Selecciona las que quieras borrar, o borra todo el mazo arriba</p>
         <div style="display:flex;gap:8px;align-items:center">
           <button class="btn btn-soft btn-sm" id="selectAllCardsBtn">${allSelected? "Deseleccionar todas":"Seleccionar todas"}</button>
           <button class="btn btn-eosin btn-sm" id="deleteSelectedCardsBtn" ${selected.length? "":"disabled"}>🗑️ Borrar seleccionadas (${selected.length})</button>
@@ -2245,6 +2289,19 @@ No das diagnósticos sobre personas reales. Respondé siempre en español, con e
       </div>
     `;
     $("#backToDecksBtn").onclick = ()=>{ state.deckDetail = null; render(); };
+    const deleteDeckBtn = $("#deleteWholeDeckBtn");
+    let deckDeleteArmed = false;
+    deleteDeckBtn.onclick = ()=>{
+      if(!deckDeleteArmed){
+        deckDeleteArmed = true;
+        deleteDeckBtn.textContent = "¿Seguro? Toca de nuevo para borrar todo";
+        setTimeout(()=>{ deckDeleteArmed = false; if($("#deleteWholeDeckBtn")) $("#deleteWholeDeckBtn").textContent = "🗑️ Borrar mazo completo"; }, 3000);
+        return;
+      }
+      deleteDeck(deck.id);
+      state.deckDetail = null;
+      render();
+    };
     $("#selectAllCardsBtn").onclick = ()=>{
       state.deckDetailSelected = allSelected ? [] : cards.map(c=>c.id);
       renderDeckDetailScreen();
@@ -2370,6 +2427,7 @@ No das diagnósticos sobre personas reales. Respondé siempre en español, con e
     });
     $$(".mk-cards-note").forEach(b=> b.onclick = (e)=>{ e.stopPropagation(); const note = state.notes.find(n=>n.id===b.dataset.id); if(note) cardsFromNote(note); });
     $$(".mk-export-note").forEach(b=> b.onclick = (e)=>{ e.stopPropagation(); const note = state.notes.find(n=>n.id===b.dataset.id); if(note) openExportMenu(note.title, note.summary + "\n" + (note.terms||[]).map(t=>t.term+": "+t.definition).join("\n")); });
+    $$(".mk-delete-note").forEach(b=> b.onclick = (e)=>{ e.stopPropagation(); deleteNote(b.dataset.id); renderNotesScreen(); });
   }
 
   function renderModeArea(){
@@ -2462,6 +2520,7 @@ No das diagnósticos sobre personas reales. Respondé siempre en español, con e
         <div class="note-btn-row">
           <button class="btn btn-soft btn-sm mk-cards-note" data-id="${note.id}">🗂️ Tarjetas</button>
           <button class="btn btn-soft btn-sm mk-export-note" data-id="${note.id}">📤 Exportar</button>
+          <button class="btn btn-eosin btn-sm mk-delete-note" data-id="${note.id}">🗑️ Borrar</button>
         </div>
       </div>
     </div>`;
