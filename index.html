@@ -217,6 +217,21 @@
   .rec-status{ font-size:12.5px; color:var(--ink-soft); }
   .transcript-box{ width:100%; min-height:90px; max-height:220px; overflow-y:auto; }
 
+  /* Conversación de voz (pantalla de inicio) */
+  .home-wave{ display:flex; align-items:center; justify-content:center; gap:3px; height:44px; width:100%; }
+  .home-wave .wave-bar{ width:4px; height:4px; border-radius:3px; background:var(--ink-faint); transition:background .25s ease; }
+  .home-wave.wave-listening .wave-bar{ background:var(--hema); }
+  .home-wave.wave-thinking .wave-bar{ background:var(--warn); }
+  .home-wave.wave-speaking .wave-bar{ background:var(--eosin); }
+  .home-voice-btn{
+    width:84px; height:84px; border-radius:50%; border:none; background:var(--hema-strong); color:#fff; font-size:28px;
+    display:flex; align-items:center; justify-content:center; cursor:pointer; box-shadow:0 0 0 0 rgba(90,63,160,.5);
+  }
+  .home-voice-btn.on{ background:var(--eosin); animation:pulse 1.6s infinite; }
+  .home-voice-status{ font-size:13px; color:var(--ink-soft); font-weight:600; min-height:18px; }
+  .home-live-transcript{ font-size:13px; color:var(--ink-faint); font-style:italic; min-height:18px; text-align:center; max-width:100%; overflow-wrap:anywhere; }
+  .home-chat-log{ display:flex; flex-direction:column; gap:10px; max-height:320px; overflow-y:auto; }
+
   .photo-drop{ border:1.5px dashed var(--line); border-radius:var(--radius-m); padding:22px; text-align:center; display:flex; flex-direction:column; align-items:center; gap:10px; cursor:pointer; }
   .photo-preview{ width:100%; border-radius:var(--radius-m); border:1px solid var(--line); display:block; max-height:280px; object-fit:cover; }
   .answer-box{ background:var(--hema-soft); border-radius:var(--radius-m); padding:13px 14px; font-size:14px; line-height:1.5; white-space:pre-wrap; }
@@ -565,7 +580,10 @@ if("serviceWorker" in navigator){
     remForm: { title:"", type:"Parcial", date:"", subject:"" },
     apiKeyDraft:"",
     authMode:"login", authEmail:"", authPass:"", authBusy:false,
-    homeListening:false, homeCommand:"", homeBusy:false,
+    // Conversación de voz de la pantalla de inicio: no es un enrutador de comandos,
+    // es un hilo de conversación continuo (fase: "idle"|"listening"|"thinking"|"speaking").
+    homeVoice: { active:false, phase:"idle", recog:null, transcript:"", silenceStreak:0 },
+    homeChat: [], homeTyped:"",
   };
 
   const PRESET_TOPICS = ["Anatomía general","Histología","Bioquímica básica","Embriología","Terminología médica","Fisiología celular"];
@@ -1468,13 +1486,14 @@ Responde SOLO con JSON, en español, sin texto adicional:
     if(loggedIn) $("#logoutBtn").onclick = ()=>{ cloudLogOut(); toast("Sesión cerrada. Los datos siguen en este dispositivo."); renderSettingsScreen(); };
   }
 
-  /* ---------- Home (saludo + comandos de voz) ---------- */
-  const TAB_LABELS = { tutor:"Tutor", cards:"Tarjetas", notes:"Apuntes", agenda:"Agenda", progress:"Progreso" };
+  /* ---------- Home (saludo + conversación de voz continua) ---------- */
+  // Accesos rápidos: navegación directa, sin pasar por la IA — son atajos de
+  // interfaz, no reemplazan la conversación (que es lo que pide el mic).
   const HOME_SHORTCUTS = [
-    { label:"Ir a mis tarjetas", cmd:"llévame a mis tarjetas" },
-    { label:"Ver mi agenda", cmd:"muéstrame la agenda" },
-    { label:"Nuevo recordatorio", cmd:"quiero agregar un recordatorio" },
-    { label:"Grabar una clase", cmd:"llévame a grabar una clase" },
+    { label:"Ir a mis tarjetas", go:()=>{ state.tab = "cards"; } },
+    { label:"Ver mi agenda", go:()=>{ state.tab = "agenda"; } },
+    { label:"Nuevo recordatorio", go:()=>{ state.tab = "addReminder"; } },
+    { label:"Grabar una clase", go:()=>{ state.tab = "notes"; state.notesMode = "record"; } },
   ];
 
   function firstName(){ const n = (state.profile.name||"").trim(); return n ? n.split(/\s+/)[0] : ""; }
@@ -1484,6 +1503,70 @@ Responde SOLO con JSON, en español, sin texto adicional:
     const parte = h<12 ? "Buenos días" : h<19 ? "Buenas tardes" : "Buenas noches";
     const name = firstName();
     return name ? `${parte}, ${escapeHtml(name)} 👋` : `${parte} 👋`;
+  }
+
+  // El "asistente de voz" de inicio es un compañero de conversación continuo
+  // sobre medicina y estudio — no un enrutador de comandos cortos. Mantiene el
+  // hilo (state.homeChat) y nunca se le limita artificialmente la extensión.
+  function homeVoiceSystemPrompt(){
+    return `Eres un asistente de voz conversacional especializado en medicina y estudios académicos, dentro de la app Sinapsis. Hablas con una estudiante en la etapa "${stageLabel()}".
+No eres un sistema de comandos rápidos: eres un interlocutor fluido, como una conversación natural entre dos personas — escuchas, respondes con claridad y utilidad, y luego haces una pregunta de seguimiento para mantener viva la conversación y orientada a sus objetivos de estudio (ej. "¿quieres que lo veamos con un caso clínico?", "¿te preparo un resumen para estudiar esto?", "¿profundizamos en la fisiopatología?").
+Tono profesional pero cercano, empático y pedagógico; adapta el nivel técnico a su etapa. Nunca cortes la conversación de forma brusca.
+Hablas de forma natural, en frases completas y con pausas lógicas — evita listas interminables pensadas para lectura en pantalla; si un tema es muy extenso, resúmelo y ofrece profundizar por partes en los siguientes turnos, sin perder el hilo.
+Tu dominio principal es medicina y estudios relacionados (ciencias de la salud, enfermería, farmacia, psicología clínica, investigación biomédica): puedes explicar conceptos, guías, algoritmos diagnósticos y terapéuticos, ayudar a planificar el estudio, simular casos clínicos paso a paso, y orientar sobre cómo buscar y leer literatura (PubMed, Cochrane, guías de sociedades). Si la conversación se desvía a otro tema puedes seguirla con naturalidad, pero vuelve a aportar valor académico/médico cuando puedas.
+No limites artificialmente la profundidad de tus explicaciones ni la longitud de la conversación; si el tema es complejo, avanza por partes a lo largo de varios turnos sin perder la coherencia. Prioriza claridad y utilidad sobre brevedad extrema.
+No des diagnósticos sobre personas reales; si pregunta por síntomas propios, sugiere consultar a un médico. Responde siempre en español.`;
+  }
+
+  function homeVoiceStatusText(){
+    const p = state.homeVoice.phase;
+    if(p==="listening") return "Escuchando…";
+    if(p==="thinking") return "Pensando…";
+    if(p==="speaking") return "Hablando…";
+    return state.homeVoice.active ? "Conversación activa — toca para pausar" : (canListen ? "Toca para empezar a hablar" : "Escribe tu pregunta abajo");
+  }
+
+  let homeWaveRAF = null, homeWaveEnergy = 0, homeWaveT = 0;
+  function stopHomeWaveAnim(){ if(homeWaveRAF) cancelAnimationFrame(homeWaveRAF); homeWaveRAF = null; }
+  function startHomeWaveAnim(){
+    stopHomeWaveAnim();
+    const frame = ()=>{
+      const wrap = $("#homeWave");
+      if(!wrap){ stopHomeWaveAnim(); return; }
+      const bars = wrap.children;
+      homeWaveT += 1; homeWaveEnergy *= 0.86;
+      const phase = state.homeVoice.phase;
+      for(let i=0;i<bars.length;i++){
+        let h;
+        if(phase==="idle") h = 4;
+        else if(phase==="thinking") h = 8 + Math.sin(homeWaveT*0.12 + i*0.5)*6;
+        else if(phase==="listening") h = 5 + Math.abs(Math.sin(homeWaveT*0.22 + i*0.7)) * (7 + homeWaveEnergy*20);
+        else h = 6 + Math.abs(Math.sin(homeWaveT*0.32 + i*0.9)) * 17; // speaking
+        bars[i].style.height = Math.max(3, Math.min(36, h)).toFixed(1) + "px";
+      }
+      homeWaveRAF = requestAnimationFrame(frame);
+    };
+    frame();
+  }
+
+  function renderHomeChatLog(){
+    const log = $("#homeChatLog");
+    if(!log) return;
+    log.innerHTML = state.homeChat.map(m=> `<div class="bubble ${m.role}">${escapeHtml(m.content).replace(/\n/g,"<br>")}</div>`).join("")
+      + (state.homeVoice.phase==="thinking" ? `<div class="bubble assistant thinking">Pensando…</div>` : "");
+    log.scrollTop = log.scrollHeight;
+  }
+
+  // Actualización ligera durante la escucha (onresult puede disparar muchas veces
+  // por segundo): solo toca el DOM necesario, nunca un render() completo, para
+  // no perder fluidez ni parpadear la pantalla mientras se habla.
+  function updateHomeVoiceUI(){
+    const wave = $("#homeWave");
+    if(!wave) return;
+    wave.className = "home-wave wave-" + state.homeVoice.phase;
+    const micBtn = $("#homeVoiceBtn"); if(micBtn) micBtn.classList.toggle("on", state.homeVoice.active);
+    const statusEl = $("#homeVoiceStatus"); if(statusEl) statusEl.textContent = homeVoiceStatusText();
+    const liveEl = $("#homeLiveTranscript"); if(liveEl) liveEl.textContent = state.homeVoice.transcript || "";
   }
 
   function renderHomeScreen(){
@@ -1498,21 +1581,24 @@ Responde SOLO con JSON, en español, sin texto adicional:
             <button class="btn btn-soft" id="saveNameBtn">Guardar</button>
           </div>` : ""}
         ${banner}
-        <p class="lede">Dime qué necesitas, por voz o por texto: "abre mis tarjetas", "agrega un parcial de anatomía el 12 de octubre", "resume esto que grabé"…</p>
+        <p class="lede">Habla con Sinapsis como en una conversación real: pregúntale sobre un tema de medicina o de tu estudio, y sigue profundizando con lo que te responda.</p>
 
-        <div class="card" style="display:flex;flex-direction:column;align-items:center;gap:12px;padding:22px 16px">
-          <button class="rec-circle ${state.homeListening?'active':''}" id="homeMicBtn" ${canListen?"":"disabled"} title="${canListen?'Hablar':'Este navegador no admite dictado por voz'}">
-            ${state.homeListening? "●" : "🎙️"}
+        <div class="card" style="display:flex;flex-direction:column;align-items:center;gap:10px;padding:20px 16px">
+          <div id="homeWave" class="home-wave wave-${state.homeVoice.phase}">${Array.from({length:20}).map(()=>`<div class="wave-bar"></div>`).join("")}</div>
+          <button class="home-voice-btn ${state.homeVoice.active?'on':''}" id="homeVoiceBtn" ${canListen?"":"disabled"} title="${canListen?'Conversar por voz':'Este navegador no admite dictado por voz'}">
+            ${state.homeVoice.active? "⏹️" : "🎙️"}
           </button>
-          <div class="rec-status">${state.homeBusy? "Pensando…" : state.homeListening? "Escuchando…" : canListen ? "Toca y habla" : "Escribe tu instrucción abajo"}</div>
-          <div class="composer" style="position:static;width:100%;padding-top:0">
-            <textarea id="homeCommandInput" rows="1" placeholder="O escribe aquí lo que necesitas…">${escapeHtml(state.homeCommand)}</textarea>
-            <button class="btn btn-primary btn-icon" id="homeSendBtn" ${state.homeBusy?"disabled":""}>➤</button>
+          <div class="home-voice-status" id="homeVoiceStatus">${homeVoiceStatusText()}</div>
+          <div class="home-live-transcript" id="homeLiveTranscript">${escapeHtml(state.homeVoice.transcript||"")}</div>
+          ${state.homeChat.length ? `<div class="home-chat-log" id="homeChatLog"></div>` : ""}
+          <div class="composer" style="position:static;width:100%;padding-top:4px">
+            <textarea id="homeTypedInput" rows="1" placeholder="O escribe tu pregunta aquí…">${escapeHtml(state.homeTyped)}</textarea>
+            <button class="btn btn-primary btn-icon" id="homeTypedSendBtn">➤</button>
           </div>
         </div>
 
         <div class="eyebrow">Accesos rápidos</div>
-        <div class="chip-row">${HOME_SHORTCUTS.map(s=>`<button class="chip" data-cmd="${escapeHtml(s.cmd)}">${escapeHtml(s.label)}</button>`).join("")}</div>
+        <div class="chip-row">${HOME_SHORTCUTS.map((s,i)=>`<button class="chip" data-shortcut="${i}">${escapeHtml(s.label)}</button>`).join("")}</div>
       </div>
     `;
     if(!state.profile.name){
@@ -1522,79 +1608,115 @@ Responde SOLO con JSON, en español, sin texto adicional:
         saveProfile(); render();
       };
     }
-    $("#homeCommandInput").oninput = e=> state.homeCommand = e.target.value;
-    $("#homeCommandInput").addEventListener("keydown", e=>{
-      if(e.key==="Enter" && !e.shiftKey){ e.preventDefault(); $("#homeSendBtn").click(); }
+    renderHomeChatLog();
+    startHomeWaveAnim();
+    $$("[data-shortcut]").forEach(b=> b.onclick = ()=>{ HOME_SHORTCUTS[+b.dataset.shortcut].go(); render(); });
+    $("#homeTypedInput").oninput = e=> state.homeTyped = e.target.value;
+    $("#homeTypedInput").addEventListener("keydown", e=>{
+      if(e.key==="Enter" && !e.shiftKey){ e.preventDefault(); $("#homeTypedSendBtn").click(); }
     });
-    $("#homeSendBtn").onclick = ()=>{
-      const v = $("#homeCommandInput").value.trim();
-      if(v) routeVoiceCommand(v);
+    $("#homeTypedSendBtn").onclick = ()=>{
+      const v = $("#homeTypedInput").value.trim();
+      if(!v) return;
+      state.homeTyped = ""; $("#homeTypedInput").value = "";
+      sendHomeVoiceTurn(v);
     };
-    $$("[data-cmd]").forEach(b=> b.onclick = ()=> routeVoiceCommand(b.dataset.cmd));
     if(canListen){
-      $("#homeMicBtn").onclick = ()=>{
-        if(state.homeListening) return;
-        state.homeListening = true; render();
-        const rec = startDictation((text, isFinal)=>{
-          state.homeCommand = text;
-          const box = $("#homeCommandInput"); if(box) box.value = text;
-          if(isFinal){
-            state.homeListening = false;
-            if(text.trim()) routeVoiceCommand(text.trim()); else render();
-          }
-        });
-        if(!rec){ state.homeListening = false; render(); toast("No se pudo activar el micrófono."); }
-        setTimeout(()=>{ if(state.homeListening){ state.homeListening=false; render(); } }, 12000);
+      $("#homeVoiceBtn").onclick = ()=>{
+        if(state.homeVoice.active) stopHomeVoiceChat(); else startHomeVoiceChat();
       };
     }
   }
 
-  async function routeVoiceCommand(text){
-    state.homeCommand = text; state.homeBusy = true; render();
-    try{
-      const prompt = `Eres el enrutador de comandos de la app de estudio Sinapsis. Interpreta la instrucción de la estudiante y responde SOLO con un objeto JSON (sin texto adicional) con una de estas formas exactas:
-{"action":"open_tab","tab":"tutor"|"cards"|"notes"|"agenda"|"progress"}
-{"action":"add_reminder","title":"...","type":"Parcial"|"Entrega"|"Trabajo","date":"YYYY-MM-DD","subject":"..."}
-{"action":"add_class","day":"Lunes"|"Martes"|"Miércoles"|"Jueves"|"Viernes"|"Sábado"|"Domingo","time":"HH:MM","subject":"...","place":"..."}
-{"action":"ask_tutor","question":"..."}
-{"action":"generate_deck","topic":"..."}
-{"action":"unknown"}
-Reglas: la fecha de hoy es ${todayStr()} (formato YYYY-MM-DD); calcula fechas relativas ("mañana", "el viernes", "en dos semanas") a partir de hoy. Si falta un dato opcional (subject, place), usa "". Si la instrucción es una pregunta de contenido médico/académico, usa "ask_tutor". Si pide crear tarjetas o un mazo de estudio, usa "generate_deck". Si no encaja en ninguna acción, usa "unknown".
-Instrucción: "${text}"`;
-      const data = await callClaudeJSON(prompt, { model: MODEL_QUICK, maxTokens:300 });
-      await runHomeAction(data);
-    }catch(e){ toast(errorCopy(e)); }
-    finally{ state.homeBusy = false; state.homeCommand = ""; if(state.tab==="home") render(); }
+  function startHomeVoiceChat(){
+    state.homeVoice.active = true;
+    state.homeVoice.silenceStreak = 0;
+    listenOneHomeTurn();
   }
 
-  async function runHomeAction(data){
-    const action = data && data.action;
-    if(action==="open_tab" && TAB_LABELS[data.tab]){
-      state.tab = data.tab; render();
-      announce(`Abriendo ${TAB_LABELS[data.tab]}.`);
-    } else if(action==="add_reminder"){
-      state.remForm = {
-        title: data.title||"", type: REM_TYPES.includes(data.type)? data.type : "Parcial",
-        date: /^\d{4}-\d{2}-\d{2}$/.test(data.date||"") ? data.date : "", subject: data.subject||"",
-      };
-      state.tab = "addReminder"; render();
-      announce("Revisa los datos y guarda el recordatorio.");
-    } else if(action==="add_class"){
-      state.schedForm = {
-        day: DAYS.includes(data.day)? data.day : "Lunes",
-        time: /^\d{2}:\d{2}$/.test(data.time||"") ? data.time : "",
-        subject: data.subject||"", place: data.place||"",
-      };
-      state.tab = "addClass"; render();
-      announce("Revisa los datos y guarda la clase.");
-    } else if(action==="ask_tutor" && data.question){
-      state.tab = "tutor"; render();
-      askTutor(data.question);
-    } else if(action==="generate_deck" && data.topic){
-      state.tab = "cards"; render();
-      generateDeck(data.topic);
-    } else {
-      announce("No entendí bien esa instrucción — puedes intentarlo de otra forma o usar los accesos rápidos.");
+  function stopHomeVoiceChat(){
+    state.homeVoice.active = false;
+    state.homeVoice.phase = "idle";
+    state.homeVoice.transcript = "";
+    if(state.homeVoice.recog){ try{ state.homeVoice.recog.stop(); }catch(e){} }
+    if(canSpeak) window.speechSynthesis.cancel();
+    render();
+  }
+
+  function listenOneHomeTurn(){
+    if(!state.homeVoice.active || !canListen) return;
+    state.homeVoice.phase = "listening";
+    state.homeVoice.transcript = "";
+    render();
+    const rec = new SpeechRec();
+    rec.lang = (navigator.language||"es-ES").startsWith("es") ? navigator.language : "es-ES";
+    rec.continuous = false; rec.interimResults = true;
+    let finalText = "", gotResult = false;
+    rec.onresult = (e)=>{
+      gotResult = true; homeWaveEnergy = 1;
+      let interim = "";
+      for(let i=e.resultIndex;i<e.results.length;i++){
+        const t = e.results[i][0].transcript;
+        if(e.results[i].isFinal) finalText += t + " "; else interim += t;
+      }
+      state.homeVoice.transcript = (finalText + interim).trim();
+      updateHomeVoiceUI();
+    };
+    rec.onerror = (e)=>{
+      if(e && (e.error==="not-allowed" || e.error==="service-not-allowed")){
+        toast("Permiso de micrófono denegado para la conversación por voz.");
+        stopHomeVoiceChat();
+      }
+      // "no-speech" y otros errores leves se resuelven en onend, reintentando.
+    };
+    rec.onend = ()=>{
+      if(!state.homeVoice.active) return;
+      const text = finalText.trim();
+      if(text){
+        state.homeVoice.silenceStreak = 0;
+        sendHomeVoiceTurn(text);
+      } else {
+        state.homeVoice.silenceStreak += 1;
+        // Tras varios turnos sin voz, se pausa sola en vez de escuchar para siempre.
+        if(state.homeVoice.silenceStreak >= 4){
+          toast("Conversación en pausa por inactividad — toca el micrófono para seguir.");
+          stopHomeVoiceChat();
+        } else {
+          setTimeout(()=>{ if(state.homeVoice.active) listenOneHomeTurn(); }, 400);
+        }
+      }
+    };
+    try{ rec.start(); state.homeVoice.recog = rec; }
+    catch(e){ setTimeout(()=>{ if(state.homeVoice.active) listenOneHomeTurn(); }, 500); }
+  }
+
+  async function sendHomeVoiceTurn(text){
+    state.homeChat.push({ role:"user", content:text });
+    state.homeVoice.phase = "thinking";
+    state.homeVoice.transcript = "";
+    render();
+    try{
+      const { text: answer } = await callClaude(state.homeChat, { system: homeVoiceSystemPrompt(), maxTokens: 8192 });
+      state.homeChat.push({ role:"assistant", content: answer });
+      state.homeVoice.phase = "speaking";
+      render();
+      if(canSpeak){
+        window.speechSynthesis.cancel();
+        speakText(answer, null, ()=>{
+          if(!state.homeVoice.active){ state.homeVoice.phase = "idle"; render(); return; }
+          state.homeVoice.phase = "idle";
+          listenOneHomeTurn();
+        });
+      } else if(state.homeVoice.active){
+        listenOneHomeTurn();
+      } else {
+        state.homeVoice.phase = "idle"; render();
+      }
+    }catch(e){
+      toast(errorCopy(e));
+      state.homeVoice.phase = "idle";
+      render();
+      if(state.homeVoice.active) setTimeout(()=>{ if(state.homeVoice.active) listenOneHomeTurn(); }, 800);
     }
   }
 
