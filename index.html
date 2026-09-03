@@ -722,7 +722,7 @@ if("serviceWorker" in navigator){
     state.decks = state.decks.filter(d=>d.id!==deckId);
     state.cards = state.cards.filter(c=>c.deckId!==deckId);
     lsSet(LS.decks, state.decks); lsSet(LS.cards, state.cards);
-    toast("Mazo borrado");
+    toast("Grupo de flashcards borrado");
     queueCloudSync();
   }
   function saveCard(card){
@@ -962,32 +962,68 @@ if("serviceWorker" in navigator){
     };
   }
 
-  async function browserSave(filename, data){
-    const blob = data instanceof Blob ? data : new Blob([data], { type: filename.endsWith(".md") ? "text/markdown" : "application/octet-stream" });
-
-    // En una PWA instalada (display:standalone, como Sinapsis), Android no
-    // muestra ninguna confirmación visible cuando un <a download> termina —
-    // el archivo SÍ se guarda en Descargas, pero en silencio, y por eso
-    // parece que "no pasa nada". El diálogo nativo de Compartir/Guardar sí
-    // muestra confirmación clara y deja elegir dónde guardarlo, así que se
-    // intenta primero. Si el navegador no lo soporta, o el permiso ya
-    // expiró (pasaron varios segundos generando el documento), se cae al
-    // método de siempre — y en ambos casos se avisa bien claro dónde quedó.
-    try{
-      const file = new File([blob], filename, { type: blob.type });
-      if(navigator.canShare && navigator.canShare({ files:[file] })){
-        await navigator.share({ files:[file], title: filename });
-        toast(`✅ "${filename}" guardado/compartido.`);
-        return;
-      }
-    }catch(e){ /* usuario canceló el diálogo, o no hay gesto de usuario activo — cae al método de descarga normal */ }
-
+  // navigator.share() EXIGE un gesto de usuario reciente (un toque directo,
+  // hace apenas un instante) — pero para cuando browserSave() se ejecuta,
+  // ya pasaron varios segundos generando el documento (llamada a la IA,
+  // búsqueda web), así que ese "permiso" casi siempre ya expiró y share()
+  // falla en silencio. Por eso la versión anterior (intentar share primero)
+  // probablemente nunca llegaba a mostrar nada. Ahora: SIEMPRE se dispara
+  // la descarga clásica primero (esa no necesita gesto reciente y es la más
+  // confiable), y se muestra un aviso que se queda en pantalla (no un toast
+  // de 2.6s que desaparece antes de poder leerlo) con un botón para
+  // compartir manualmente — ESE botón sí tiene gesto fresco garantizado
+  // porque lo dispara el toque del usuario en ese mismo instante.
+  function triggerBrowserDownload(filename, blob){
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url; a.download = filename;
     document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(()=>URL.revokeObjectURL(url), 4000);
-    toast(`✅ "${filename}" guardado en tu carpeta Descargas.`);
+    setTimeout(()=>URL.revokeObjectURL(url), 60000);
+  }
+
+  async function browserSave(filename, data){
+    const blob = data instanceof Blob ? data : new Blob([data], { type: filename.endsWith(".md") ? "text/markdown" : "application/octet-stream" });
+    triggerBrowserDownload(filename, blob);
+    showFileSavedModal([{filename, blob}]);
+  }
+
+  // files: [{filename, blob}, ...] — un solo aviso persistente para uno o
+  // varios archivos a la vez (evita que se tapen 3 modales seguidos cuando
+  // se exportan PPT+Word+Notas juntos).
+  function showFileSavedModal(files){
+    const old = $("#fileSavedModal"); if(old) old.remove();
+    const wrap = document.createElement("div");
+    wrap.className = "modal-overlay"; wrap.id = "fileSavedModal";
+    const listHtml = files.map(f=>`<li>${escapeHtml(f.filename)}</li>`).join("");
+    wrap.innerHTML = `
+      <div class="modal-sheet">
+        <div class="eyebrow">${files.length>1? "Archivos listos":"Archivo listo"}</div>
+        <h3 class="section-title" style="font-size:16px;margin-bottom:4px">✅ ${files.length} generado${files.length===1?"":"s"}</h3>
+        <ul style="margin:0 0 4px 18px;padding:0;font-size:13.5px;color:var(--ink-soft)">${listHtml}</ul>
+        <p class="lede">Se enviaron a descargar. Si no los ves: abrí la app <b>Archivos</b> de tu teléfono → carpeta <b>Descargas</b>, o revisá la barra de notificaciones (deslizá hacia abajo).</p>
+        <p class="lede">Si tampoco aparecen ahí, guardalos o enviarlos a otra app uno por uno con los botones de abajo.</p>
+        <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px" id="manualShareList"></div>
+        <button class="btn btn-ghost btn-block" id="closeFileSavedBtn" style="margin-top:8px">Cerrar</button>
+      </div>`;
+    document.body.appendChild(wrap);
+    wrap.addEventListener("click", e=>{ if(e.target===wrap) wrap.remove(); });
+    $("#closeFileSavedBtn", wrap).onclick = ()=> wrap.remove();
+    const shareListEl = $("#manualShareList", wrap);
+    files.forEach(f=>{
+      let canShareThis = false;
+      try{ canShareThis = !!(navigator.canShare && navigator.canShare({ files:[new File([f.blob], f.filename, {type:f.blob.type})] })); }catch(e){}
+      if(!canShareThis) return;
+      const btn = document.createElement("button");
+      btn.className = "btn btn-eosin btn-block";
+      btn.textContent = `📤 Compartir/Guardar "${f.filename}"`;
+      btn.onclick = async ()=>{
+        try{
+          const file = new File([f.blob], f.filename, { type: f.blob.type });
+          await navigator.share({ files:[file], title: f.filename });
+        }catch(e){ /* usuario canceló — no pasa nada, puede reintentar */ }
+      };
+      shareListEl.appendChild(btn);
+    });
   }
 
   function addGeneratedFile(filename, blob, type){
@@ -1658,10 +1694,10 @@ Responde SOLO con JSON, en español, sin texto adicional:
       files.push({name: notasFilename, blob: notasBlob});
     }catch(e){ console.error("Error en Notas:", e); }
 
-    // Descargar archivos uno por uno (en serie, no en paralelo) — el diálogo
-    // nativo de compartir/guardar no admite abrir varios a la vez.
-    for(const f of files){ await browserSave(f.name, f.blob); }
-    toast(`✅ ${files.length} archivo${files.length===1?"":"s"} generado${files.length===1?"":"s"}: PPT, Word y Notas`);
+    // Descargar los 3 archivos y mostrar UN solo aviso combinado al final
+    // (en vez de un modal por archivo, que se taparían entre sí).
+    files.forEach(f=> triggerBrowserDownload(f.name, f.blob));
+    showFileSavedModal(files.map(f=>({ filename:f.name, blob:f.blob })));
   }
 
   /* ---------- Menú de exportación (elegir formato) ---------- */
@@ -2233,6 +2269,7 @@ No das diagnósticos sobre personas reales. Respondé siempre en español, con e
       openExportMenu(deck.name, material);
     });
     $$("[data-open-deck]").forEach(el=> el.onclick = ()=>{ state.tab="cards"; openDeckDetail(el.dataset.openDeck); });
+    wireDeleteDeckButtons();
   }
 
   function deckRow(deck){
@@ -2246,9 +2283,29 @@ No das diagnósticos sobre personas reales. Respondé siempre en español, con e
       </div>
       <div class="deck-actions">
         <div class="due-pill ${due? "" : "zero"}">${due? due+" hoy" : "al día"}</div>
-        <button class="icon-link export-deck-btn" data-id="${deck.id}">📤 Exportar</button>
+        <div style="display:flex;gap:10px">
+          <button class="icon-link export-deck-btn" data-id="${deck.id}">📤 Exportar</button>
+          <button class="icon-link delete-deck-btn" data-id="${deck.id}" style="color:var(--eosin);font-weight:700">🗑️ Borrar</button>
+        </div>
       </div>
     </div>`;
+  }
+
+  function wireDeleteDeckButtons(){
+    $$(".delete-deck-btn").forEach(b=>{
+      b.onclick = (e)=>{
+        e.stopPropagation();
+        if(b.dataset.armed==="1"){
+          deleteDeck(b.dataset.id);
+          render();
+          return;
+        }
+        b.dataset.armed = "1";
+        const original = b.textContent;
+        b.textContent = "¿Seguro? Toca de nuevo";
+        setTimeout(()=>{ b.dataset.armed=""; if(document.body.contains(b)) b.textContent = original; }, 3000);
+      };
+    });
   }
 
   function openDeckDetail(deckId){
@@ -2267,10 +2324,10 @@ No das diagnósticos sobre personas reales. Respondé siempre en español, con e
       <div class="screen">
         <div class="section-head" style="justify-content:space-between">
           <button class="icon-link" id="backToDecksBtn">← Volver a Flashcards</button>
-          <button class="icon-link" id="deleteWholeDeckBtn" style="color:var(--eosin)">🗑️ Borrar mazo completo</button>
+          <button class="icon-link" id="deleteWholeDeckBtn" style="color:var(--eosin)">🗑️ Borrar todo este grupo</button>
         </div>
         <h2 class="section-title" style="font-size:20px">${escapeHtml(deck.name)}</h2>
-        <p class="lede">${cards.length} tarjeta${cards.length===1?"":"s"} · Selecciona las que quieras borrar, o borra todo el mazo arriba</p>
+        <p class="lede">${cards.length} tarjeta${cards.length===1?"":"s"} · Selecciona las que quieras borrar, o borrá todo el grupo arriba</p>
         <div style="display:flex;gap:8px;align-items:center">
           <button class="btn btn-soft btn-sm" id="selectAllCardsBtn">${allSelected? "Deseleccionar todas":"Seleccionar todas"}</button>
           <button class="btn btn-eosin btn-sm" id="deleteSelectedCardsBtn" ${selected.length? "":"disabled"}>🗑️ Borrar seleccionadas (${selected.length})</button>
@@ -2284,7 +2341,7 @@ No das diagnósticos sobre personas reales. Respondé siempre en español, con e
                 <div style="font-size:12.5px;color:var(--ink-soft);margin-top:3px">${escapeHtml(c.back)}</div>
               </div>
             </label>
-          `).join("") : `<div class="empty-note">Este mazo no tiene tarjetas.</div>`}
+          `).join("") : `<div class="empty-note">Este grupo no tiene tarjetas.</div>`}
         </div>
       </div>
     `;
@@ -2295,7 +2352,7 @@ No das diagnósticos sobre personas reales. Respondé siempre en español, con e
       if(!deckDeleteArmed){
         deckDeleteArmed = true;
         deleteDeckBtn.textContent = "¿Seguro? Toca de nuevo para borrar todo";
-        setTimeout(()=>{ deckDeleteArmed = false; if($("#deleteWholeDeckBtn")) $("#deleteWholeDeckBtn").textContent = "🗑️ Borrar mazo completo"; }, 3000);
+        setTimeout(()=>{ deckDeleteArmed = false; if($("#deleteWholeDeckBtn")) $("#deleteWholeDeckBtn").textContent = "🗑️ Borrar todo este grupo"; }, 3000);
         return;
       }
       deleteDeck(deck.id);
@@ -2734,6 +2791,7 @@ No das diagnósticos sobre personas reales. Respondé siempre en español, con e
       openExportMenu(deck.name, material);
     });
     $$("[data-open-deck]").forEach(el=> el.onclick = ()=>{ state.tab="cards"; openDeckDetail(el.dataset.openDeck); });
+    wireDeleteDeckButtons();
   }
 
   /* ---------- tabs & boot ---------- */
