@@ -1,5 +1,10 @@
-const CACHE = "sinapsis-v3";
-const ASSETS = ["./", "./index.html", "./manifest.json", "./icon-192.png", "./icon-512.png", "./vendor/pptxgen.bundle.js", "./vendor/jspdf.umd.min.js", "./vendor/docx.iife.js"];
+const CACHE = "sinapsis-v4";
+const ASSETS = ["./", "./index.html", "./manifest.json", "./icon-192.png", "./icon-512.png"];
+// Las librerías de documentos pueden haber quedado en vendor/ o sueltas en la
+// raíz del repo según cómo se subieron — se listan ambas ubicaciones acá pero
+// sin que un 404 en alguna de ellas rompa la instalación del service worker
+// (ver más abajo, cada .add() se cachea por separado).
+const OPTIONAL_ASSETS = ["./vendor/pptxgen.bundle.js", "./vendor/jspdf.umd.min.js", "./vendor/docx.iife.js", "./pptxgen.bundle.js", "./jspdf.umd.min.js", "./docx.iife.js"];
 // Files whose latest version matters more than instant load (the app shell) —
 // these go network-first so a redeploy reaches the device right away instead
 // of getting stuck behind a stale cached copy indefinitely.
@@ -15,7 +20,7 @@ self.addEventListener("install", (e) => {
   e.waitUntil(
     caches.open(CACHE).then((c) =>
       Promise.all(
-        ASSETS.map((url) =>
+        ASSETS.concat(OPTIONAL_ASSETS).map((url) =>
           c.add(url).catch((err) => { try { console.error("SW precache failed for", url, err); } catch (e2) {} })
         )
       )

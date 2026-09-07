@@ -1314,9 +1314,13 @@ Responde SOLO con un array JSON: [{"front":"...","back":"..."}, ...]`;
     });
     return state[flagKey+"Promise"];
   }
-  const ensurePptxLib = ()=> lazyScript("pptx", ["./vendor/pptxgen.bundle.js", "https://cdnjs.cloudflare.com/ajax/libs/pptxgenjs/3.12.0/pptxgen.bundle.js"], ()=>window.PptxGenJS);
-  const ensureJsPdfLib = ()=> lazyScript("jspdf", ["./vendor/jspdf.umd.min.js", "https://cdnjs.cloudflare.com/ajax/libs/jspdf/4.2.1/jspdf.umd.min.js"], ()=>window.jspdf && window.jspdf.jsPDF);
-  const ensureDocxLib = ()=> lazyScript("docx", ["./vendor/docx.iife.js", "https://cdn.jsdelivr.net/npm/docx@9.7.1/dist/index.iife.js"], ()=>window.docx);
+  // Se prueban varias ubicaciones posibles (carpeta vendor/, o sueltos en la
+  // raíz del repo) porque según cómo se hayan subido los archivos al repo
+  // pueden haber quedado en cualquiera de los dos lugares — así funciona
+  // igual sin importar cómo se subieron.
+  const ensurePptxLib = ()=> lazyScript("pptx", ["./vendor/pptxgen.bundle.js", "./pptxgen.bundle.js", "https://cdnjs.cloudflare.com/ajax/libs/pptxgenjs/3.12.0/pptxgen.bundle.js"], ()=>window.PptxGenJS);
+  const ensureJsPdfLib = ()=> lazyScript("jspdf", ["./vendor/jspdf.umd.min.js", "./jspdf.umd.min.js", "https://cdnjs.cloudflare.com/ajax/libs/jspdf/4.2.1/jspdf.umd.min.js"], ()=>window.jspdf && window.jspdf.jsPDF);
+  const ensureDocxLib = ()=> lazyScript("docx", ["./vendor/docx.iife.js", "./docx.iife.js", "https://cdn.jsdelivr.net/npm/docx@9.7.1/dist/index.iife.js"], ()=>window.docx);
 
   async function getStudyOutline(title, materialText){
     const prompt = `Eres profesor de medicina redactando un documento de estudio completo y serio para una estudiante, a partir de este material (título y 5-8 secciones). El contenido debe ser real, preciso y con información concreta — nunca frases vacías ni relleno genérico.
