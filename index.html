@@ -1288,21 +1288,35 @@ Responde SOLO con un array JSON: [{"front":"...","back":"..."}, ...]`;
      un único esquema generado por IA (un solo gasto de tokens) y cada una lo
      traduce a su propio formato.
   */
-  function lazyScript(flagKey, src, globalCheck){
+  // Las librerías van embebidas localmente (carpeta vendor/, cacheadas por el
+  // service worker) para que generar documentos NUNCA dependa de que el CDN
+  // externo sea alcanzable desde la red/operador del celular del usuario.
+  // Si por algún motivo el archivo local fallara, se intenta el CDN como
+  // último recurso, pero ese ya no es el camino normal.
+  function lazyScript(flagKey, srcs, globalCheck){
     if(state[flagKey+"Ready"]) return Promise.resolve(true);
     if(state[flagKey+"Promise"]) return state[flagKey+"Promise"];
+    const list = Array.isArray(srcs) ? srcs.slice() : [srcs];
     state[flagKey+"Promise"] = new Promise(resolve=>{
-      const s = document.createElement("script");
-      s.src = src;
-      s.onload = ()=>{ state[flagKey+"Ready"] = !!globalCheck(); resolve(state[flagKey+"Ready"]); };
-      s.onerror = ()=>{ state[flagKey+"Ready"] = false; resolve(false); };
-      document.head.appendChild(s);
+      function tryNext(){
+        const src = list.shift();
+        if(!src){ state[flagKey+"Ready"] = false; resolve(false); return; }
+        const s = document.createElement("script");
+        s.src = src;
+        s.onload = ()=>{
+          if(globalCheck()){ state[flagKey+"Ready"] = true; resolve(true); }
+          else tryNext();
+        };
+        s.onerror = ()=>{ tryNext(); };
+        document.head.appendChild(s);
+      }
+      tryNext();
     });
     return state[flagKey+"Promise"];
   }
-  const ensurePptxLib = ()=> lazyScript("pptx", "https://cdnjs.cloudflare.com/ajax/libs/pptxgenjs/3.12.0/pptxgen.bundle.js", ()=>window.PptxGenJS);
-  const ensureJsPdfLib = ()=> lazyScript("jspdf", "https://cdnjs.cloudflare.com/ajax/libs/jspdf/4.2.1/jspdf.umd.min.js", ()=>window.jspdf && window.jspdf.jsPDF);
-  const ensureDocxLib = ()=> lazyScript("docx", "https://cdn.jsdelivr.net/npm/docx@9.7.1/dist/index.iife.js", ()=>window.docx);
+  const ensurePptxLib = ()=> lazyScript("pptx", ["./vendor/pptxgen.bundle.js", "https://cdnjs.cloudflare.com/ajax/libs/pptxgenjs/3.12.0/pptxgen.bundle.js"], ()=>window.PptxGenJS);
+  const ensureJsPdfLib = ()=> lazyScript("jspdf", ["./vendor/jspdf.umd.min.js", "https://cdnjs.cloudflare.com/ajax/libs/jspdf/4.2.1/jspdf.umd.min.js"], ()=>window.jspdf && window.jspdf.jsPDF);
+  const ensureDocxLib = ()=> lazyScript("docx", ["./vendor/docx.iife.js", "https://cdn.jsdelivr.net/npm/docx@9.7.1/dist/index.iife.js"], ()=>window.docx);
 
   async function getStudyOutline(title, materialText){
     const prompt = `Eres profesor de medicina redactando un documento de estudio completo y serio para una estudiante, a partir de este material (título y 5-8 secciones). El contenido debe ser real, preciso y con información concreta — nunca frases vacías ni relleno genérico.

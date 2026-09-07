@@ -1,5 +1,5 @@
-const CACHE = "sinapsis-v2";
-const ASSETS = ["./", "./index.html", "./manifest.json", "./icon-192.png", "./icon-512.png"];
+const CACHE = "sinapsis-v3";
+const ASSETS = ["./", "./index.html", "./manifest.json", "./icon-192.png", "./icon-512.png", "./vendor/pptxgen.bundle.js", "./vendor/jspdf.umd.min.js", "./vendor/docx.iife.js"];
 // Files whose latest version matters more than instant load (the app shell) —
 // these go network-first so a redeploy reaches the device right away instead
 // of getting stuck behind a stale cached copy indefinitely.
